@@ -13,6 +13,7 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
+#include "driver/temperature_sensor.h"
 #include "llm_client.h"
 #include "tools.h"
 #include <nats_atoms.h>
@@ -174,6 +175,7 @@ static bool loadConfig() {
 
 bool g_debug = false;
 bool g_led_user = false; /* true when LED was set by a tool — don't overwrite with status */
+temperature_sensor_handle_t g_temp_sensor = NULL;
 
 LlmClient llm;
 char serialBuf[SERIAL_BUF_SIZE];
@@ -303,6 +305,18 @@ static void historyLoad() {
     if (historyCount > 0) {
         Serial.printf("History: loaded %d turns from %s\n", historyCount, HISTORY_FILE);
     }
+}
+
+/*============================================================================
+ * Temperature Sensor
+ *============================================================================*/
+
+void initTempSensor() {
+    temperature_sensor_config_t config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    esp_err_t err = temperature_sensor_install(&config, &g_temp_sensor);
+    if (err != ESP_OK) { Serial.printf("Temp sensor install failed: %d\n", err); return; }
+    err = temperature_sensor_enable(g_temp_sensor);
+    if (err != ESP_OK) { Serial.printf("Temp sensor enable failed: %d\n", err); }
 }
 
 /*============================================================================
@@ -1020,6 +1034,14 @@ void setup() {
     loadConfig();
     historyLoad();
     Serial.printf("Model: %s\n", cfg_model);
+
+    /* Initialize temperature sensor */
+    initTempSensor();
+    if (g_temp_sensor) {
+        float temp = 0.0f;
+        temperature_sensor_get_celsius(g_temp_sensor, &temp);
+        Serial.printf("Chip temp: %.1f C\n", temp);
+    }
 
     if (cfg_wifi_ssid[0] == '\0' || cfg_api_key[0] == '\0') {
         Serial.printf("\n[ERROR] Missing config! Upload filesystem:\n");

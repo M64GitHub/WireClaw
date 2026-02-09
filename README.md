@@ -30,6 +30,7 @@ Talk to it like you'd talk to a person. Via Telegram from your phone, serial ove
 | *"Read GPIO 5"* | `gpio_read(pin=5)` - returns the pin state |
 | *"How much free memory do you have?"* | `device_info()` - reports heap, uptime, chip info |
 | *"Save a note to /notes.txt"* | `file_write(...)` - writes to flash |
+| *"What's the chip temperature?"* | `temperature_read()` - returns internal sensor reading |
 | *"Publish 'hello' to home.alert"* | `nats_publish(...)` - sends a NATS message |
 
 The AI runs an agentic loop with tool calling - up to 5 tool-call iterations per message - so it can reason, act, observe, and respond.
@@ -170,6 +171,7 @@ The AI has access to all tools regardless of which channel the message came from
 | `gpio_write` | Set a GPIO pin HIGH or LOW |
 | `gpio_read` | Read digital state of a GPIO pin |
 | `device_info` | Get heap, uptime, WiFi, chip info |
+| `temperature_read` | Read internal chip temperature (Celsius) |
 | `file_read` | Read a file from LittleFS |
 | `file_write` | Write a file to LittleFS |
 | `nats_publish` | Publish a message to a NATS subject |

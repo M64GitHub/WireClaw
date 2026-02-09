@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <nats_atoms.h>
+#include "driver/temperature_sensor.h"
 
 /* Forward declarations (defined in main.cpp) */
 extern void led(uint8_t r, uint8_t g, uint8_t b);
@@ -16,6 +17,7 @@ extern void ledOff();
 extern bool g_led_user;
 extern NatsClient natsClient;
 extern bool g_nats_connected;
+extern temperature_sensor_handle_t g_temp_sensor;
 
 /*============================================================================
  * Simple JSON argument parser (for tool arguments)
@@ -166,6 +168,17 @@ static const char *TOOLS_JSON = R"JSON([
         "required": ["subject", "payload"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "temperature_read",
+      "description": "Read the ESP32 internal chip temperature sensor. Returns temperature in Celsius. Note: this is the chip die temperature, not ambient.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
   }
 ])JSON";
 
@@ -307,6 +320,15 @@ static void tool_nats_publish(const char *args, char *result, int result_len) {
     }
 }
 
+static void tool_temperature_read(const char *args, char *result, int result_len) {
+    (void)args;
+    float temp = 0.0f;
+    if (g_temp_sensor != NULL) {
+        temperature_sensor_get_celsius(g_temp_sensor, &temp);
+    }
+    snprintf(result, result_len, "Chip temperature: %.1f C", temp);
+}
+
 /*============================================================================
  * Public API
  *============================================================================*/
@@ -331,6 +353,8 @@ bool toolExecute(const char *name, const char *args_json,
         tool_file_write(args_json, result, result_len);
     } else if (strcmp(name, "nats_publish") == 0) {
         tool_nats_publish(args_json, result, result_len);
+    } else if (strcmp(name, "temperature_read") == 0) {
+        tool_temperature_read(args_json, result, result_len);
     } else {
         snprintf(result, result_len, "Error: unknown tool '%s'", name);
         return false;
