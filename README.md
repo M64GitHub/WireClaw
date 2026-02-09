@@ -36,7 +36,7 @@ The AI runs an agentic loop with tool calling - up to 5 tool-call iterations per
 
 ## Why Not Just Run the Agent on a Computer?
 
-You could. But then you need a computer running 24/7, a bridge to the hardware, and something to manage the connection. esp-claw is self-contained: flash it, configure WiFi and a Telegram bot token, and chat with it from your phone. No server, no bridge, no hub. The ESP32 *is* the agent.
+You could. But then you need a computer running 24/7, a bridge to the hardware, and something to manage the connection. WireClaw is self-contained: flash it, configure WiFi and a Telegram bot token, and chat with it from your phone. No server, no bridge, no hub. The ESP32 *is* the agent.
 
 For multi-device setups, add a [NATS](https://nats.io/) server and the devices coordinate directly - machine-to-machine, sub-millisecond, no cloud required.
 
@@ -110,7 +110,7 @@ Type a message and press Enter - or just open Telegram and text your bot.
 
 ## Telegram Bot
 
-The most accessible way to use esp-claw. No computer needed - just your phone.
+The most accessible way to use WireClaw. No computer needed - just your phone.
 
 - Polls for messages every 10 seconds (3 seconds during active conversation)
 - Only responds to messages from your configured `telegram_chat_id`
@@ -137,13 +137,13 @@ When `nats_host` is configured, the device subscribes using `device_name` as pre
 
 ```bash
 # Chat with the AI (request/reply)
-nats req esp-claw-01.chat "What is your free memory?"
+nats req wireclaw-01.chat "What is your free memory?"
 
 # Send a system command
-nats req esp-claw-01.cmd "status"
+nats req wireclaw-01.cmd "status"
 
 # Watch events from the device
-nats sub "esp-claw-01.events"
+nats sub "wireclaw-01.events"
 ```
 
 ### Cross-Channel Example
@@ -239,7 +239,7 @@ Telegram / Serial / NATS
 ## Project Structure
 
 ```
-esp-claw/
+WireClaw/
   platformio.ini              # Build config (ESP32-C6, pioarduino, LittleFS)
   data/
     config.json               # Runtime config (gitignored)
@@ -268,7 +268,7 @@ esp-claw/
 
 - [OpenClaw](https://github.com/openclaw/openclaw) - the AI agent that controls your digital life
 
-esp-claw takes the same idea to the physical world: not files and calendars, but GPIO pins, sensors, and relays.
+WireClaw takes the same idea to the physical world: not files and calendars, but GPIO pins, sensors, and relays.
 
 ## License
 
