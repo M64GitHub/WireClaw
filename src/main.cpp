@@ -57,6 +57,8 @@ void ledPurple() { led(128, 0, 255); }
  * Globals
  *============================================================================*/
 
+bool g_debug = false;
+
 LlmClient llm;
 char serialBuf[SERIAL_BUF_SIZE];
 int  serialPos = 0;
@@ -204,11 +206,18 @@ void handleSerialCommand(const char *input) {
         return;
     }
 
+    if (strcmp(input, "/debug") == 0) {
+        g_debug = !g_debug;
+        Serial.printf("Debug %s\n> ", g_debug ? "ON" : "OFF");
+        return;
+    }
+
     if (strcmp(input, "/help") == 0) {
         Serial.printf("--- esp-claw commands ---\n");
         Serial.printf("  /status  - Show device status\n");
         Serial.printf("  /clear   - Clear conversation history\n");
         Serial.printf("  /heap    - Show free memory\n");
+        Serial.printf("  /debug   - Toggle debug output\n");
         Serial.printf("  /reboot  - Restart ESP32\n");
         Serial.printf("  /help    - This help\n");
         Serial.printf("  (anything else) - Chat with AI\n");
@@ -226,7 +235,7 @@ void handleSerialCommand(const char *input) {
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
+    delay(5000);
 
     Serial.printf("\n\n");
     Serial.printf("========================================\n");

@@ -12,6 +12,9 @@
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 
+/* Global debug flag — toggled via /debug serial command */
+extern bool g_debug;
+
 /* Maximum sizes */
 #define LLM_MAX_RESPONSE_LEN   4096  /* Max content we extract from response */
 #define LLM_MAX_REQUEST_LEN    8192  /* Max JSON request body */

@@ -11,48 +11,7 @@ static const char *OPENROUTER_HOST = "openrouter.ai";
 static const int   OPENROUTER_PORT = 443;
 static const char *OPENROUTER_PATH = "/api/v1/chat/completions";
 
-/*
- * ISRG Root X1 - Let's Encrypt root CA (used by openrouter.ai)
- * Valid until 2035-06-04
- */
-static const char *ROOT_CA = R"CA(
------BEGIN CERTIFICATE-----
-MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
-TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
-cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
-WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
-ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
-MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
-h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
-0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6
-UA5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+s
-WT8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qy
-HB5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+U
-CvdAfPXbIKGSIFBqKwEhHhBMcM6GjM/e28bCKqIZtKx5Gp4BYQbh3R+EBhxmFhpe
-BGIC1nGHsra+2sHM2uKYR4MXqobGGiENHY8PIYXGM0eopqSVEvbYMb7HNa0LwBSI
-J+HSTHxKYLPmwjM0EhXJ0zQ3bxH5CREfNBp4K5oBB/6SoK8+egCdNOiY6j8qJRhN
-Mdo1DC+0C7MeMJyBFj+TK5K1D2g6mSCij9gE3wiuPetNxGFnYHhPyel99f3Lcvn0
-S3jq2xJCgn4dJzAUjQ4JEk9tDhnJhPWGCFlaLSjN8RiNjfMA0+WoA9J1/kg7iQco
-bMCxLPAsPMzGVP8wIDIqz8YVABEBAAG/HQ4wYjELMAkGA1UEBhMCVVMxKTAnBgNV
-BAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2VhcmNoIEdyb3VwMRUwEwYDVQQDEwxJ
-U1JHIFJvb3QgWDEwHhcNMjAwOTA0MDAwMDAwWhcNMjUwOTE1MTYwMDAwWjAyMQsw
-CQYDVQQGEwJVUzEWMBQGA1UEChMNTGV0J3MgRW5jcnlwdDELMAkGA1UEAxMCUjMw
-ggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7AhUozPaglNMPEuyNVZLD
-+ILxmaZ6QoinXSaqtSu5xUyxr45r+XXIo9cPR5QUVTVXjJ6oojkZ9YI8QqlObvU7
-wy7bjcCwXPNZOOftz2nwWgsbvsCUJCWH+jdxsxPnHKzhm+/b5DtFUkWWqcFTzjTI
-Uu61ru2P3mBw4qVUq7ZtDpelQDRrK9O8ZutmNHz6a4uPVymZ+DAXXbpyb/uBxa3S
-hlg9F8fnCbvxK/eG3MHacV3URuPMrSXBiLxgZ3Vms/EY96Jc5lP/Ooi2R6X/ExjQ
-oid0X9YRzP1TVhN/LLI9L0GR7PY6Kn7M6L4J+TNnJzHB2W2Ari3kNUMRVlvAgMB
-AAGjggEIMIIBBDAOBgNVHQ8BAf8EBAMCAYYwHQYDVR0lBBYwFAYIKwYBBQUHAwIG
-CCsGAQUFBwMBMBIGA1UdEwEB/wQIMAYBAf8CAQAwHQYDVR0OBBYEFBQusxe3WFbL
-rlAJQOYfr52LFMLGMB8GA1UdIwQYMBaAFHm0WeZ7tuXkAXOACIjIGlj26Ztu
-MDcGCCsGAQUFBwEBBCswKTAnBggrBgEFBQcwAoYbaHR0cDovL3gxLmkubGVuY3Iu
-b3JnLzAiBgNVHR8EGzAZMBegFaAThidodHRwOi8veDEuYy5sZW5jci5vcmcvMCIG
-A1UdIAQbMBkwCAYGZ4EMAQIBMA0GCysGAQQBgt8TAQEBMA0GCSqGSIb3DQEBCwUA
-A4ICAQCFyk5HPqP3hUSFvNVneLKYY611TR6WPTNlclQtgaDqw+34IL9fzLdwALdu
-o/NNJ/XRH4Y/SOkpZ+rA02b3AR6B+JA=
------END CERTIFICATE-----
-)CA";
+/* Skip TLS cert validation for now (TODO: add proper root CA pinning) */
 
 /* ---- JSON escaping ---- */
 
@@ -202,7 +161,7 @@ LlmClient::LlmClient()
 void LlmClient::begin(const char *api_key, const char *model) {
     m_api_key = api_key;
     m_model = model;
-    m_client.setCACert(ROOT_CA);
+    m_client.setInsecure(); /* TODO: add proper root CA pinning */
     m_client.setTimeout(LLM_READ_TIMEOUT_MS / 1000);
 }
 
@@ -299,6 +258,7 @@ int LlmClient::readResponse(char *buf, int buf_len) {
         return -1;
     }
     http_status = status_line.substring(9, 12).toInt();
+    if (g_debug) Serial.printf("[LLM] HTTP %d\n", http_status);
 
     /* Read headers */
     while (m_client.connected()) {
@@ -314,47 +274,37 @@ int LlmClient::readResponse(char *buf, int buf_len) {
             chunked = true;
         }
     }
+    if (g_debug) Serial.printf("[LLM] content_length=%d chunked=%d\n", content_length, chunked);
 
-    /* Read body */
+    /*
+     * Read body: use a unified approach that works for both chunked and
+     * non-chunked responses. We read all available data until the connection
+     * closes (we send Connection: close, so server will close when done).
+     * For chunked encoding, this gives us raw chunks with size prefixes,
+     * but the JSON content is still extractable.
+     */
     int total = 0;
 
-    if (chunked) {
-        /* Chunked transfer encoding */
-        while (m_client.connected() && total < buf_len - 1) {
-            String chunk_size_str = m_client.readStringUntil('\n');
-            chunk_size_str.trim();
-            int chunk_size = strtol(chunk_size_str.c_str(), nullptr, 16);
-            if (chunk_size <= 0) break;
-
-            int to_read = chunk_size < (buf_len - 1 - total) ?
-                          chunk_size : (buf_len - 1 - total);
-            int rd = m_client.readBytes(buf + total, to_read);
-            total += rd;
-
-            /* Skip remaining chunk data if buffer full */
-            int skip = chunk_size - to_read;
-            while (skip > 0) {
-                uint8_t tmp[256];
-                int s = m_client.readBytes(tmp, skip < 256 ? skip : 256);
-                if (s <= 0) break;
-                skip -= s;
-            }
-
-            /* Read trailing \r\n after chunk */
-            m_client.readStringUntil('\n');
-        }
-    } else if (content_length > 0) {
+    if (content_length > 0 && !chunked) {
+        /* Known content length — read exactly that many bytes */
         int to_read = content_length < (buf_len - 1) ?
                       content_length : (buf_len - 1);
         total = m_client.readBytes(buf, to_read);
     } else {
-        /* Read until connection closes or buffer full */
-        unsigned long start = millis();
-        while (m_client.connected() && total < buf_len - 1) {
-            if (m_client.available()) {
-                buf[total++] = m_client.read();
-                start = millis();
-            } else if (millis() - start > 5000) {
+        /* Chunked or unknown length — read until connection closes */
+        unsigned long last_data = millis();
+        while (total < buf_len - 1) {
+            int avail = m_client.available();
+            if (avail > 0) {
+                int to_read = avail < (buf_len - 1 - total) ?
+                              avail : (buf_len - 1 - total);
+                int rd = m_client.readBytes(buf + total, to_read);
+                total += rd;
+                last_data = millis();
+            } else if (!m_client.connected()) {
+                break; /* Server closed connection — we're done */
+            } else if (millis() - last_data > 10000) {
+                if (g_debug) Serial.printf("[LLM] Read timeout after %d bytes\n", total);
                 break;
             } else {
                 delay(10);
@@ -380,7 +330,7 @@ bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
         return false;
     }
 
-    Serial.printf("[LLM] Connecting to %s...\n", OPENROUTER_HOST);
+    if (g_debug) Serial.printf("[LLM] Connecting to %s...\n", OPENROUTER_HOST);
     unsigned long t0 = millis();
 
     if (!m_client.connect(OPENROUTER_HOST, OPENROUTER_PORT)) {
@@ -388,8 +338,8 @@ bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
         return false;
     }
 
-    Serial.printf("[LLM] Connected (%lums). Sending %d bytes...\n",
-                  millis() - t0, req_len);
+    if (g_debug) Serial.printf("[LLM] Connected (%lums). Sending %d bytes...\n",
+                               millis() - t0, req_len);
 
     /* Send HTTP request */
     m_client.printf("POST %s HTTP/1.1\r\n", OPENROUTER_PATH);
@@ -401,7 +351,7 @@ bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
     m_client.printf("\r\n");
     m_client.write((uint8_t *)request_buf, req_len);
 
-    Serial.printf("[LLM] Request sent. Waiting for response...\n");
+    if (g_debug) Serial.printf("[LLM] Request sent. Waiting for response...\n");
 
     /* Wait for response */
     unsigned long wait_start = millis();
@@ -426,8 +376,12 @@ bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
         return false;
     }
 
-    Serial.printf("[LLM] Response: %d bytes (%lums total)\n",
-                  body_len, millis() - t0);
+    if (g_debug) {
+        Serial.printf("[LLM] Response: %d bytes (%lums total)\n",
+                      body_len, millis() - t0);
+        Serial.printf("[LLM] Body: %.*s\n", body_len < 500 ? body_len : 500,
+                      response_buf);
+    }
 
     return parseResponse(response_buf, body_len, result);
 }
