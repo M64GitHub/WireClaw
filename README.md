@@ -1,4 +1,4 @@
-# esp-claw 🦀⚡
+# WireClaw 🦀⚡
 
 OpenClaw controls files. WireClaw controls wires.
 OpenClaw lives on your laptop. WireClaw lives in the wall.
