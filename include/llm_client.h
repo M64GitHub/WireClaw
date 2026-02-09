@@ -17,7 +17,7 @@ extern bool g_debug;
 
 /* Maximum sizes */
 #define LLM_MAX_RESPONSE_LEN   4096  /* Max content we extract from response */
-#define LLM_MAX_REQUEST_LEN    8192  /* Max JSON request body */
+#define LLM_MAX_REQUEST_LEN    12288 /* Max JSON request body */
 #define LLM_READ_TIMEOUT_MS    30000 /* 30s read timeout for LLM response */
 #define LLM_MAX_MESSAGES       24    /* Max messages in conversation (more for tool loops) */
 #define LLM_MAX_TOOL_CALLS     4     /* Max tool calls per LLM response */

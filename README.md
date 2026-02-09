@@ -1,65 +1,186 @@
-# WireClaw 🦀⚡
+# WireClaw
 
-OpenClaw controls files. WireClaw controls wires.  
-OpenClaw lives on your laptop. WireClaw lives in the wall.  
-WireClaw turns intent into signals.
+An AI agent that lives on a $5 microcontroller and controls real hardware.
 
-**AI agents for the physical world.**
+Tell it what you want in plain language — over Telegram, serial, or NATS — and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI.
 
-WireClaw lets you talk to real hardware using natural language.
-Chat with an ESP32 over Telegram, serial, or NATS - and let it control GPIO pins, sensors, relays, and LEDs directly.
+```
+You:  "When the chip temperature goes above 28, set the LED orange.
+       When it drops back down, set it cyan."
 
-A $5 microcontroller that understands  
-*“turn on the fan when the temperature exceeds 28°C”*  
-and just does it.
+WireClaw: rule_create(sensor_name="chip_temp", condition="gt", threshold=28,
+                       on_action="led_set", on_r=255, on_g=80, on_b=0,
+                       off_action="led_set", off_r=0, off_g=255, off_b=255)
 
-<!-- TODO: Add Telegram screenshot here -->
-<!-- ![Telegram chat controlling ESP32 hardware](docs/telegram-demo.png) -->
+       → Rule created: rule_01 'heat warning' - chip_temp > 28 (every 5s) with auto-off
+```
 
-> [OpenClaw](https://github.com/openclaw/openclaw) brought AI agents to the desktop.  
-> **WireClaw** brings them to the physical world - signals, sensors, and actuators on embedded devices.
+The rule now runs in the main loop. No cloud, no server, no LLM calls. Just the ESP32 checking the sensor every 5 seconds and flipping the LED.
 
-## What Can It Do?
+It can also text you:
 
-Talk to it like you'd talk to a person. Via Telegram from your phone, serial over USB, or NATS from anywhere on your network:
+```
+You:  "Send me a Telegram message when chip temperature goes above 40."
 
-| You say | What happens |
-|---|---|
-| *"Turn the LED red"* | `led_set(r=255, g=0, b=0)` - LED turns red |
-| *"Set GPIO 4 high"* | `gpio_write(pin=4, value=1)` - relay clicks on |
-| *"Read GPIO 5"* | `gpio_read(pin=5)` - returns the pin state |
-| *"How much free memory do you have?"* | `device_info()` - reports heap, uptime, chip info |
-| *"Save a note to /notes.txt"* | `file_write(...)` - writes to flash |
-| *"What's the chip temperature?"* | `temperature_read()` - returns internal sensor reading |
-| *"Publish 'hello' to home.alert"* | `nats_publish(...)` - sends a NATS message |
+WireClaw: rule_create(sensor_name="chip_temp", condition="gt", threshold=40,
+                       on_action="telegram",
+                       on_telegram_message="Chip is overheating!",
+                       off_action="telegram",
+                       off_telegram_message="Chip temperature back to normal.")
 
-The AI runs an agentic loop with tool calling - up to 5 tool-call iterations per message - so it can reason, act, observe, and respond.
+       → Rule created: rule_01 'heat alert' - chip_temp > 40 (every 5s) with auto-off
+```
 
-## Why Not Just Run the Agent on a Computer?
+The ESP32 monitors the sensor and sends you a Telegram message the moment the threshold is crossed — and another when it clears. No LLM in the loop.
 
-You could. But then you need a computer running 24/7, a bridge to the hardware, and something to manage the connection. WireClaw is self-contained: flash it, configure WiFi and a Telegram bot token, and chat with it from your phone. No server, no bridge, no hub. The ESP32 *is* the agent.
+## How It Works
 
-For multi-device setups, add a [NATS](https://nats.io/) server and the devices coordinate directly - machine-to-machine, sub-millisecond, no cloud required.
+WireClaw has two halves:
+
+**1. AI Agent** — An agentic loop that takes natural language from any input channel, calls an LLM (via OpenRouter), and executes tool calls against the hardware. Up to 5 tool-call iterations per message.
+
+**2. Local Rule Engine** — Persistent automation rules created by the AI (or by you through the AI). Rules evaluate sensor conditions in the main loop and trigger actions immediately, with no network round-trip. They survive reboots.
+
+The AI creates the rules. The rules run without the AI.
+
+```
+Telegram / Serial / NATS ──→ chatWithLLM() ──→ OpenRouter
+                                                    │
+                                              tool_calls
+                                                    │
+                              ┌──────────────────────┤
+                              ▼                      ▼
+                        rule_create()          led_set(), gpio_write(), ...
+                              │
+                              ▼
+                    ┌─────────────────────┐
+                    │  Rule Engine (loop)  │  ← runs every iteration, no LLM
+                    │  sensor → condition  │
+                    │  → action            │
+                    └─────────────────────┘
+```
+
+## Try It With Just a Dev Board
+
+You don't need external sensors to test WireClaw. The ESP32's internal temperature sensor is pre-registered as `chip_temp`, and the onboard RGB LED is available as a rule action. Here's a full example using only the bare dev board:
+
+### Example: Temperature-Based LED Color
+
+Open serial (or Telegram) and type:
+
+```
+Set the LED orange when chip temperature exceeds 28 degrees,
+and cyan when it drops below.
+```
+
+The AI creates a rule. Behind the scenes:
+
+```
+rule_create(
+    rule_name     = "heat warning",
+    sensor_name   = "chip_temp",
+    condition     = "gt",
+    threshold     = 28,
+    on_action     = "led_set",
+    on_r = 255, on_g = 80, on_b = 0,     ← orange when hot
+    off_action    = "led_set",
+    off_r = 0, off_g = 255, off_b = 255   ← cyan when cool
+)
+```
+
+Now check it:
+
+```
+> /rules
+--- rules ---
+  rule_01 'heat warning' [ON] chip_temp gt 28 val=31 FIRED
+---
+```
+
+The rule is running. Warm up the chip (run some WiFi traffic) and watch the LED change. Reboot — the rule persists.
+
+### Example: Telegram Alerts
+
+Get a push notification on your phone when a sensor crosses a threshold:
+
+```
+You:  "Alert me on Telegram when chip temp goes above 40, and tell me when it's back to normal."
+```
+
+Behind the scenes:
+
+```
+rule_create(
+    rule_name            = "heat alert",
+    sensor_name          = "chip_temp",
+    condition            = "gt",
+    threshold            = 40,
+    on_action            = "telegram",
+    on_telegram_message  = "Chip temperature exceeded 40 C!",
+    off_action           = "telegram",
+    off_telegram_message = "Chip temperature back to normal."
+)
+```
+
+The ESP32 checks every 5 seconds. The moment it crosses 40, your phone buzzes. When it drops back down, you get the all-clear. No LLM calls, no cloud services — just a direct HTTPS request from the ESP32 to the Telegram API.
+
+You can combine actions too: "Set the LED red AND send me a Telegram message when temperature exceeds 50" creates two rules — one for the LED, one for the alert.
+
+### Example: Register an External Sensor + Actuator
+
+If you wire up an NTC thermistor on pin 4 and a relay on pin 16:
+
+```
+You:  "Register an NTC thermistor on pin 4 called 'temperature', unit is C"
+AI:   device_register(name="temperature", type="ntc_10k", pin=4, unit="C")
+      → Registered sensor 'temperature' on pin 4
+
+You:  "Register a relay on pin 16 called 'fan', it uses inverted logic"
+AI:   device_register(name="fan", type="relay", pin=16, inverted=true)
+      → Registered actuator 'fan' on pin 16
+
+You:  "Turn on the fan when temperature exceeds 28"
+AI:   rule_create(rule_name="cool down", sensor_name="temperature",
+                  condition="gt", threshold=28, actuator_name="fan")
+      → Rule created: rule_01 'cool down' - temperature > 28 (every 5s) with auto-off
+```
+
+Devices and rules persist to flash. After a reboot:
+
+```
+> /devices
+--- devices ---
+  chip_temp [internal_temp] pin=255  = 27.3 C
+  temperature [ntc_10k] pin=4  = 24.1 C
+  fan [relay] pin=16 (inverted)
+---
+
+> /rules
+--- rules ---
+  rule_01 'cool down' [ON] temperature gt 28 val=24 idle
+---
+```
+
+Everything is restored. The fan rule is watching the temperature and will fire when it crosses 28.
 
 ## Features
 
-- **Telegram Bot** - chat with your ESP32 from anywhere, directly from your phone
-- **Tool Calling** - agentic loop where the LLM controls GPIO, LEDs, filesystem, and NATS
-- **NATS Integration** - device-to-device communication, commands, and event publishing
-- **Serial Interface** - local chat and commands over USB (115200 baud)
-- **LLM Chat** via [OpenRouter](https://openrouter.ai/) API (any OpenAI-compatible provider)
-- **Filesystem Config** - WiFi, API key, model, system prompt stored on LittleFS (no recompile)
-- **Conversation History** - 6-turn circular buffer, persisted to flash across reboots
-- **Watchdog Timer** - auto-recovery from hangs (60s timeout)
-- **LED Status** - heartbeat pulse, color feedback for thinking/success/error states
+- **Rule Engine** — persistent local automation, edge-triggered, evaluated every loop iteration
+- **Telegram Alerts** — rules can send you push notifications directly, no LLM in the loop
+- **Device Registry** — named sensors and actuators instead of raw pin numbers, persisted to flash
+- **AI Agent** — agentic loop with 17 tools, up to 5 iterations per message
+- **Telegram Bot** — chat with your ESP32 from your phone
+- **NATS Integration** — device-to-device messaging, commands, and rule-triggered events
+- **Serial Interface** — local chat and commands over USB (115200 baud)
+- **Conversation History** — 6-turn circular buffer, persisted across reboots
 
 ## Hardware
 
-- **Board:** ESP32-C6 (tested on WaveShare ESP32-C6 DevKit with 8MB flash)
+- **Board:** ESP32-C6 (tested on WaveShare ESP32-C6 DevKit, 8MB flash)
 - **Platform:** [pioarduino](https://github.com/pioarduino/platform-espressif32) via PlatformIO
 - **Requirements:** WiFi network, [OpenRouter](https://openrouter.ai/) API key
 
-Total BOM for a basic setup: ~$5.
+The dev board alone is enough to get started — chip temperature sensor and RGB LED work out of the box. Add external sensors and actuators as needed.
 
 ## Quick Start
 
@@ -83,194 +204,216 @@ Edit `data/config.json`:
   "wifi_pass": "YourPassword",
   "api_key": "sk-or-v1-your-openrouter-api-key",
   "model": "openai/gpt-4o-mini",
-  "device_name": "esp-claw-01",
-  "max_tokens": 2048,
-  "temperature": 0.7,
+  "device_name": "wireclaw-01",
   "nats_host": "",
   "nats_port": "4222",
-  "telegram_token": "your-bot-token-from-botfather",
-  "telegram_chat_id": "your-chat-id"
+  "telegram_token": "",
+  "telegram_chat_id": ""
 }
 ```
 
-For Telegram: create a bot via [@BotFather](https://t.me/BotFather), get your chat ID from [@userinfobot](https://t.me/userinfobot).
-
 Leave `telegram_token` empty to disable Telegram. Leave `nats_host` empty to disable NATS.
 
-Optionally edit `data/system_prompt.txt` to customize the AI's personality.
+For Telegram: create a bot via [@BotFather](https://t.me/BotFather), get your chat ID from [@userinfobot](https://t.me/userinfobot).
 
 ### 3. Build and Flash
 
 ```
-pio run -t uploadfs    # upload config + system prompt
+pio run -t uploadfs    # upload config + system prompt to filesystem
 pio run -t upload      # flash firmware
-pio device monitor     # connect via serial
+pio device monitor     # connect via serial (115200 baud)
 ```
 
-Type a message and press Enter - or just open Telegram and text your bot.
+Type a message and press Enter. Or open Telegram and text your bot.
 
-## Telegram Bot
+## Device Registry
 
-The most accessible way to use WireClaw. No computer needed - just your phone.
+Named sensors and actuators that the AI and rule engine can reference by name.
 
-- Polls for messages every 10 seconds (3 seconds during active conversation)
-- Only responds to messages from your configured `telegram_chat_id`
-- Same agentic loop as serial/NATS - all tools available
-- TLS connections are sequential, never concurrent (one connection at a time, ~40% RAM used)
+### Supported Device Types
 
-### Setup
+| Type | Kind | Description |
+|------|------|-------------|
+| `digital_in` | Sensor | `digitalRead()` — 0 or 1 |
+| `analog_in` | Sensor | `analogRead()` — raw ADC value 0-4095 |
+| `ntc_10k` | Sensor | NTC thermistor — converts to Celsius (B=3950) |
+| `ldr` | Sensor | Light-dependent resistor — rough lux estimate |
+| `internal_temp` | Sensor | ESP32 chip temperature (no pin, virtual) |
+| `digital_out` | Actuator | `digitalWrite()` — HIGH or LOW |
+| `relay` | Actuator | `digitalWrite()` with optional inverted logic |
+| `pwm` | Actuator | `analogWrite()` — 0-255 |
 
-1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → copy the token
-2. Get your chat ID from [@userinfobot](https://t.me/userinfobot)
-3. Add both to `config.json`, flash, done
+`chip_temp` is auto-registered on first boot. All other devices are registered through conversation with the AI.
 
-## NATS Integration
+Devices persist to `/devices.json` on flash.
 
-NATS is the machine-to-machine backbone. While Telegram is for humans chatting with devices, NATS is for automation: device-to-device events, scripted commands, fleet management.
+## Rule Engine
 
-When `nats_host` is configured, the device subscribes using `device_name` as prefix:
+Rules monitor a sensor, evaluate a condition, and trigger an action — all in the main loop, no LLM involved.
 
-| Subject | Pattern | Description |
-|---|---|---|
-| `{device_name}.chat` | request/reply | Send a message, get LLM response back |
-| `{device_name}.cmd` | fire-and-forget | System commands (status, clear, heap, debug, reboot) |
-| `{device_name}.events` | publish | Status events and responses |
+### Conditions
 
-```bash
-# Chat with the AI (request/reply)
-nats req wireclaw-01.chat "What is your free memory?"
+| Condition | Meaning |
+|-----------|---------|
+| `gt` | Sensor reading > threshold |
+| `lt` | Sensor reading < threshold |
+| `eq` | Sensor reading == threshold |
+| `neq` | Sensor reading != threshold |
+| `change` | Sensor reading changed since last check |
+| `always` | Always fire (useful with intervals) |
 
-# Send a system command
-nats req wireclaw-01.cmd "status"
+### Actions
 
-# Watch events from the device
-nats sub "wireclaw-01.events"
-```
+| Action | Description |
+|--------|-------------|
+| `actuator` | Set a registered actuator on/off (resolves by device name) |
+| `led_set` | Set the onboard RGB LED (on_r/on_g/on_b params, 0-255) |
+| `gpio_write` | Write a raw GPIO pin HIGH/LOW |
+| `nats_publish` | Publish a message to a NATS subject |
+| `telegram` | Send a Telegram message (on_telegram_message / off_telegram_message) |
 
-### Cross-Channel Example
+### Behavior
 
-Subscribe to NATS events in a terminal, then ask the AI from Telegram (or serial) to publish:
-
-```bash
-# Terminal: listen for messages
-nats sub "home.>"
-
-# From Telegram: "Send a NATS message to home.alert saying the temperature is 23 degrees"
-# Terminal shows:
-# [#1] Received on "home.alert"
-# The temperature is 23 degrees.
-```
-
-The AI has access to all tools regardless of which channel the message came from.
+- **Edge-triggered** — fires once on threshold crossing, not repeatedly
+- **Auto-off** — when using `actuator_name` or `off_action`, the reverse action runs when the condition clears
+- **Interval** — configurable per rule (default 5 seconds)
+- **NATS events** — every rule trigger publishes to `{device_name}.events`
+- **Persistence** — rules survive reboots (`/rules.json`)
+- **IDs** — auto-assigned: `rule_01`, `rule_02`, etc.
 
 ## LLM Tools
 
+17 tools available to the AI:
+
 | Tool | Description |
-|---|---|
-| `led_set` | Set RGB LED color (0-255 per channel) |
+|------|-------------|
+| **Hardware** | |
+| `led_set` | Set RGB LED color (r, g, b: 0-255) |
 | `gpio_write` | Set a GPIO pin HIGH or LOW |
 | `gpio_read` | Read digital state of a GPIO pin |
-| `device_info` | Get heap, uptime, WiFi, chip info |
-| `temperature_read` | Read internal chip temperature (Celsius) |
+| `temperature_read` | Read chip temperature (Celsius) |
+| **Device Registry** | |
+| `device_register` | Register a named sensor or actuator |
+| `device_list` | List all devices with current readings |
+| `device_remove` | Remove a device by name |
+| `sensor_read` | Read a named sensor (returns value + unit) |
+| `actuator_set` | Set a named actuator (0/1 or 0-255 for PWM) |
+| **Rule Engine** | |
+| `rule_create` | Create an automation rule |
+| `rule_list` | List rules with status and last readings |
+| `rule_delete` | Delete a rule by ID or "all" |
+| `rule_enable` | Enable/disable a rule without deleting |
+| **System** | |
+| `device_info` | Heap, uptime, WiFi, chip info |
 | `file_read` | Read a file from LittleFS |
 | `file_write` | Write a file to LittleFS |
-| `nats_publish` | Publish a message to a NATS subject |
+| `nats_publish` | Publish to a NATS subject |
 
 ## Serial Commands
 
 | Command | Description |
-|---|---|
+|---------|-------------|
 | `/status` | Device status (WiFi, heap, NATS, uptime) |
+| `/devices` | List registered devices with readings |
+| `/rules` | List automation rules with status |
 | `/config` | Show loaded configuration |
 | `/prompt` | Show system prompt |
-| `/history` | Show conversation history (truncated) |
-| `/history full` | Show full conversation history |
+| `/history` | Show conversation history |
 | `/clear` | Clear conversation history |
 | `/heap` | Show free memory |
 | `/debug` | Toggle debug output |
 | `/reboot` | Restart ESP32 |
 | `/help` | List commands |
-| *(anything else)* | Chat with AI |
+
+## NATS Integration
+
+When `nats_host` is configured, the device subscribes to:
+
+| Subject | Description |
+|---------|-------------|
+| `{device_name}.chat` | Request/reply — send a message, get LLM response |
+| `{device_name}.cmd` | Commands: status, clear, heap, debug, devices, rules, reboot |
+| `{device_name}.events` | Published events: online, rule triggers, chat responses |
+
+Rule triggers automatically publish events:
+
+```json
+{"event":"rule","rule":"cool down","state":"on","reading":29,"threshold":28}
+```
+
+```bash
+# Watch rule events
+nats sub "wireclaw-01.events"
+
+# Chat with the AI
+nats req wireclaw-01.chat "What's the temperature?"
+
+# System command
+nats req wireclaw-01.cmd "rules"
+```
 
 ## Configuration
 
 | Field | Description |
-|---|---|
+|-------|-------------|
 | `wifi_ssid` | WiFi network name |
 | `wifi_pass` | WiFi password |
-| `api_key` | OpenRouter API key |
-| `model` | LLM model identifier (e.g. `openai/gpt-4o-mini`) |
+| `api_key` | [OpenRouter](https://openrouter.ai/) API key |
+| `model` | LLM model (e.g. `openai/gpt-4o-mini`) |
 | `device_name` | Device name, used as NATS subject prefix |
-| `max_tokens` | Max response tokens (reserved for future use) |
-| `temperature` | LLM temperature (reserved for future use) |
-| `nats_host` | NATS server IP/hostname (empty = disabled) |
+| `nats_host` | NATS server hostname (empty = disabled) |
 | `nats_port` | NATS server port (default: 4222) |
-| `telegram_token` | Telegram Bot API token from [@BotFather](https://t.me/BotFather) (empty = disabled) |
-| `telegram_chat_id` | Allowed Telegram chat ID (only this chat can talk to the bot) |
+| `telegram_token` | Telegram bot token from [@BotFather](https://t.me/BotFather) (empty = disabled) |
+| `telegram_chat_id` | Allowed Telegram chat ID |
 
-## Architecture
-
-```
-Telegram / Serial / NATS
-         |
-         v
-    chatWithLLM()
-         |
-         v
-    System prompt + history + user message
-         |
-         v
-    HTTPS → OpenRouter ─────────────────────┐
-         |                                   |
-         v                                   |
-    Parse response                           |
-         |                                   |
-    ┌────┴────┐                              |
-    │         │                              |
-  text    tool_calls                         |
-    │         │                              |
-    v         v                              |
-  done    Execute → append results → loop ───┘
-             (max 5 iterations)
-```
-
-- **Memory:** static buffers, no dynamic allocation in hot paths (~40% RAM used)
-- **TLS:** `WiFiClientSecure` - one connection at a time (Telegram and OpenRouter share sequentially)
-- **Watchdog:** 60s task WDT, fed every loop iteration
+Edit `data/system_prompt.txt` to customize the AI's personality and instructions.
 
 ## Project Structure
 
 ```
 WireClaw/
-  platformio.ini              # Build config (ESP32-C6, pioarduino, LittleFS)
+  platformio.ini              # Build config (ESP32-C6, pioarduino)
   data/
     config.json               # Runtime config (gitignored)
-    config.json.example       # Example config template
+    config.json.example       # Config template
     system_prompt.txt         # AI personality/instructions
   include/
-    llm_client.h              # LLM client API
+    llm_client.h              # LLM client (OpenRouter HTTPS)
     tools.h                   # Tool execution API
+    devices.h                 # Device registry API
+    rules.h                   # Rule engine API
   src/
-    main.cpp                  # WiFi, serial, NATS, Telegram, agentic loop, history
+    main.cpp                  # WiFi, serial, NATS, Telegram, agentic loop
     llm_client.cpp            # HTTPS client for OpenRouter
-    tools.cpp                 # Tool definitions and handlers
+    tools.cpp                 # 17 tool definitions and handlers
+    devices.cpp               # Device registry + persistence
+    rules.cpp                 # Rule engine + persistence
   lib/
-    nats/                     # NATS client (nats-atoms)
+    nats/                     # NATS client library (nats-atoms)
 ```
+
+Runtime data (created automatically, stored on flash):
+- `/devices.json` — registered devices
+- `/rules.json` — automation rules
+- `/history.json` — conversation history
+
+## Resource Usage
+
+```
+RAM:   48.9% (160KB of 320KB)
+Flash: 36.2% (1.2MB of 3.3MB)
+```
+
+Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (12KB), conversation history, TLS stack.
 
 ## Roadmap
 
-- [ ] **Rule engine** - "if temperature > 28, turn on fan" as persistent local rules evaluated in the main loop, no LLM needed after creation
-- [ ] **Sensor abstraction** - named sensors and actuators instead of raw GPIO numbers
-- [ ] **Display dashboard** - live sensor readings, rule status, conversation on a small SPI screen
-- [ ] **Data logging** - circular buffer of sensor readings, queryable via LLM ("what was the temperature overnight?")
-- [ ] **Cross-device rules** - NATS subscribe as rule trigger (device A's sensor controls device B's relay)
-
-## Inspired By
-
-- [OpenClaw](https://github.com/openclaw/openclaw) - the AI agent that controls your digital life
-
-WireClaw takes the same idea to the physical world: not files and calendars, but GPIO pins, sensors, and relays.
+- [x] Rule engine — persistent local automation without LLM
+- [x] Device registry — named sensors and actuators
+- [x] Telegram alerts — rules send push notifications directly from the ESP32
+- [ ] Display dashboard — live sensor readings and rule status on SPI screen
+- [ ] Data logging — circular buffer of readings, queryable via LLM
+- [ ] Cross-device rules — NATS subscribe as rule trigger
 
 ## License
 
