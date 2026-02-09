@@ -3,7 +3,7 @@
  * @brief esp-claw - ESP32 AI Agent
  *
  * A reimplementation of PicoClaw's core agent loop for ESP32.
- * Phase 1: Serial chat with OpenRouter LLM API.
+ * Phase 2: LittleFS config + system prompt from filesystem.
  *
  * Type a message in the serial monitor, get an LLM response.
  * Use 115200 baud, send with newline.
@@ -11,7 +11,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include "secrets.h"
+#include <LittleFS.h>
 #include "llm_client.h"
 
 /*============================================================================
@@ -22,13 +22,26 @@
 #define SERIAL_BUF_SIZE  512
 #define MAX_HISTORY      6  /* Keep last N user+assistant turns (pairs) */
 
-static const char *SYSTEM_PROMPT =
-    "You are esp-claw, a helpful AI assistant running on an ESP32 microcontroller. "
-    "You are concise because your responses are transmitted over a slow serial link. "
-    "Keep responses under 200 words unless asked for detail. "
-    "You have access to GPIO pins, LEDs, and sensors on the ESP32 board. "
-    "You are connected via WiFi and can communicate over NATS messaging. "
-    "Be friendly, practical, and embedded-systems-aware.";
+/* Runtime config — loaded from LittleFS, falls back to secrets.h */
+static char cfg_wifi_ssid[64];
+static char cfg_wifi_pass[64];
+static char cfg_api_key[128];
+static char cfg_model[64];
+static char cfg_device_name[32];
+static char cfg_system_prompt[4096];
+
+/* Placeholder defaults — overridden by LittleFS config.json */
+static void configDefaults() {
+    cfg_wifi_ssid[0] = '\0';
+    cfg_wifi_pass[0] = '\0';
+    cfg_api_key[0] = '\0';
+    strncpy(cfg_model, "openai/gpt-4o-mini", sizeof(cfg_model));
+    strncpy(cfg_device_name, "esp-claw", sizeof(cfg_device_name));
+    strncpy(cfg_system_prompt,
+        "You are esp-claw, a helpful AI assistant running on an ESP32 microcontroller. "
+        "Be concise. Keep responses under 200 words unless asked for detail.",
+        sizeof(cfg_system_prompt));
+}
 
 /*============================================================================
  * LED Helpers (WaveShare ESP32-C6 has GRB swap)
@@ -52,6 +65,90 @@ void ledGreen()  { led(0, 255, 0); }
 void ledCyan()   { led(0, 255, 255); }
 void ledBlue()   { led(0, 0, 255); }
 void ledPurple() { led(128, 0, 255); }
+
+/*============================================================================
+ * LittleFS Config Loading
+ *============================================================================*/
+
+/**
+ * Simple JSON string extractor — find "key":"value" and copy value to dst.
+ * Returns true if found.
+ */
+static bool jsonGetString(const char *json, const char *key,
+                           char *dst, int dst_len) {
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return false;
+
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '"') return false;
+    p++; /* skip opening quote */
+
+    int w = 0;
+    while (*p && *p != '"' && w < dst_len - 1) {
+        if (*p == '\\' && *(p + 1)) {
+            p++; /* skip backslash, take next char */
+        }
+        dst[w++] = *p++;
+    }
+    dst[w] = '\0';
+    return w > 0;
+}
+
+/**
+ * Read a file from LittleFS into a buffer.
+ * Returns bytes read, or -1 on error.
+ */
+static int readFile(const char *path, char *buf, int buf_len) {
+    File f = LittleFS.open(path, "r");
+    if (!f) return -1;
+
+    int len = f.readBytes(buf, buf_len - 1);
+    buf[len] = '\0';
+    f.close();
+    return len;
+}
+
+/**
+ * Load config from LittleFS. Falls back to secrets.h defaults.
+ */
+static bool loadConfig() {
+    configDefaults();
+
+    if (!LittleFS.begin(false)) {
+        Serial.printf("LittleFS: mount failed (no filesystem?)\n");
+        Serial.printf("LittleFS: using compile-time defaults\n");
+        return false;
+    }
+
+    Serial.printf("LittleFS: mounted OK\n");
+
+    /* Load config.json */
+    static char json_buf[1024];
+    int len = readFile("/config.json", json_buf, sizeof(json_buf));
+    if (len > 0) {
+        Serial.printf("LittleFS: loaded config.json (%d bytes)\n", len);
+        jsonGetString(json_buf, "wifi_ssid", cfg_wifi_ssid, sizeof(cfg_wifi_ssid));
+        jsonGetString(json_buf, "wifi_pass", cfg_wifi_pass, sizeof(cfg_wifi_pass));
+        jsonGetString(json_buf, "api_key", cfg_api_key, sizeof(cfg_api_key));
+        jsonGetString(json_buf, "model", cfg_model, sizeof(cfg_model));
+        jsonGetString(json_buf, "device_name", cfg_device_name, sizeof(cfg_device_name));
+    } else {
+        Serial.printf("LittleFS: no config.json, using defaults\n");
+    }
+
+    /* Load system prompt */
+    len = readFile("/system_prompt.txt", cfg_system_prompt, sizeof(cfg_system_prompt));
+    if (len > 0) {
+        Serial.printf("LittleFS: loaded system_prompt.txt (%d bytes)\n", len);
+    } else {
+        Serial.printf("LittleFS: no system_prompt.txt, using default prompt\n");
+    }
+
+    return true;
+}
 
 /*============================================================================
  * Globals
@@ -78,11 +175,11 @@ static int  historyCount = 0;
  *============================================================================*/
 
 bool connectWiFi() {
-    Serial.printf("WiFi: Connecting to %s", WIFI_SSID);
+    Serial.printf("WiFi: Connecting to %s", cfg_wifi_ssid);
     ledOrange();
 
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    WiFi.begin(cfg_wifi_ssid, cfg_wifi_pass);
 
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED) {
@@ -114,7 +211,7 @@ void chatWithLLM(const char *userMessage) {
     int msgCount = 0;
 
     /* System prompt */
-    messages[msgCount++] = {"system", SYSTEM_PROMPT};
+    messages[msgCount++] = {"system", cfg_system_prompt};
 
     /* History */
     for (int i = 0; i < historyCount; i++) {
@@ -182,7 +279,8 @@ void handleSerialCommand(const char *input) {
         Serial.printf("Heap: %u free / %u total\n",
                       ESP.getFreeHeap(), ESP.getHeapSize());
         Serial.printf("History: %d turns\n", historyCount);
-        Serial.printf("Model: %s\n", OPENROUTER_MODEL);
+        Serial.printf("Model: %s\n", cfg_model);
+        Serial.printf("Debug: %s\n", g_debug ? "ON" : "OFF");
         Serial.printf("Uptime: %lus\n", millis() / 1000);
         Serial.printf("> ");
         return;
@@ -206,6 +304,22 @@ void handleSerialCommand(const char *input) {
         return;
     }
 
+    if (strcmp(input, "/config") == 0) {
+        Serial.printf("--- config ---\n");
+        Serial.printf("WiFi SSID: %s\n", cfg_wifi_ssid);
+        Serial.printf("API key:   %.8s...\n", cfg_api_key);
+        Serial.printf("Model:     %s\n", cfg_model);
+        Serial.printf("Device:    %s\n", cfg_device_name);
+        Serial.printf("Prompt:    %d chars\n", (int)strlen(cfg_system_prompt));
+        Serial.printf("> ");
+        return;
+    }
+
+    if (strcmp(input, "/prompt") == 0) {
+        Serial.printf("--- system prompt ---\n%s\n---\n> ", cfg_system_prompt);
+        return;
+    }
+
     if (strcmp(input, "/debug") == 0) {
         g_debug = !g_debug;
         Serial.printf("Debug %s\n> ", g_debug ? "ON" : "OFF");
@@ -215,6 +329,8 @@ void handleSerialCommand(const char *input) {
     if (strcmp(input, "/help") == 0) {
         Serial.printf("--- esp-claw commands ---\n");
         Serial.printf("  /status  - Show device status\n");
+        Serial.printf("  /config  - Show loaded config\n");
+        Serial.printf("  /prompt  - Show system prompt\n");
         Serial.printf("  /clear   - Clear conversation history\n");
         Serial.printf("  /heap    - Show free memory\n");
         Serial.printf("  /debug   - Toggle debug output\n");
@@ -239,9 +355,20 @@ void setup() {
 
     Serial.printf("\n\n");
     Serial.printf("========================================\n");
-    Serial.printf("  esp-claw - ESP32 AI Agent v0.1.0\n");
-    Serial.printf("  Model: %s\n", OPENROUTER_MODEL);
+    Serial.printf("  esp-claw - ESP32 AI Agent v0.2.0\n");
     Serial.printf("========================================\n\n");
+
+    /* Load config from LittleFS */
+    loadConfig();
+    Serial.printf("Model: %s\n", cfg_model);
+
+    if (cfg_wifi_ssid[0] == '\0' || cfg_api_key[0] == '\0') {
+        Serial.printf("\n[ERROR] Missing config! Upload filesystem:\n");
+        Serial.printf("  pio run -t uploadfs\n");
+        Serial.printf("Halted.\n");
+        ledRed();
+        while (true) delay(1000);
+    }
 
     /* Connect WiFi */
     if (!connectWiFi()) {
@@ -251,7 +378,7 @@ void setup() {
     }
 
     /* Init LLM client */
-    llm.begin(OPENROUTER_API_KEY, OPENROUTER_MODEL);
+    llm.begin(cfg_api_key, cfg_model);
 
     Serial.printf("\nReady! Free heap: %u bytes\n", ESP.getFreeHeap());
     Serial.printf("Type a message and press Enter. /help for commands.\n\n");
