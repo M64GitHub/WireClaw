@@ -1,17 +1,23 @@
 # WireClaw 🦀⚡
 
-OpenClaw controls files. WireClaw controls wires.
-OpenClaw lives on your laptop. WireClaw lives in the wall.
+OpenClaw controls files. WireClaw controls wires.  
+OpenClaw lives on your laptop. WireClaw lives in the wall.  
 WireClaw turns intent into signals.
 
 **AI agents for the physical world.**
 
-Chat with your ESP32 from Telegram, serial, or NATS - and let it control real hardware through natural language. A $5 microcontroller that understands "turn on the fan when the temperature exceeds 28°C" and just does it.
+WireClaw lets you talk to real hardware using natural language.
+Chat with an ESP32 over Telegram, serial, or NATS - and let it control GPIO pins, sensors, relays, and LEDs directly.
+
+A $5 microcontroller that understands  
+*“turn on the fan when the temperature exceeds 28°C”*  
+and just does it.
 
 <!-- TODO: Add Telegram screenshot here -->
 <!-- ![Telegram chat controlling ESP32 hardware](docs/telegram-demo.png) -->
 
-> [OpenClaw](https://github.com/openclaw/openclaw) brought AI agents to your desktop. **esp-claw** brings them to the physical world - GPIO pins, sensors, relays, and LEDs on a microcontroller that fits in your palm.
+> [OpenClaw](https://github.com/openclaw/openclaw) brought AI agents to the desktop.  
+> **WireClaw** brings them to the physical world - signals, sensors, and actuators on embedded devices.
 
 ## What Can It Do?
 
