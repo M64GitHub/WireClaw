@@ -3,7 +3,7 @@
  * @brief esp-claw - ESP32 AI Agent
  *
  * A reimplementation of PicoClaw's core agent loop for ESP32.
- * Phase 4: NATS integration for remote control + tool calling.
+ * Phase 5: Polish — history persistence, LED heartbeat, watchdog.
  *
  * Type a message in the serial monitor, get an LLM response.
  * Use 115200 baud, send with newline.
@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <LittleFS.h>
+#include <esp_task_wdt.h>
 #include "llm_client.h"
 #include "tools.h"
 #include <nats_atoms.h>
@@ -32,6 +33,8 @@ static char cfg_model[64];
 static char cfg_device_name[32];
 static char cfg_nats_host[64];
 static int  cfg_nats_port = 4222;
+static char cfg_telegram_token[64];
+static char cfg_telegram_chat_id[16];
 static char cfg_system_prompt[4096];
 
 /* Placeholder defaults — overridden by LittleFS config.json */
@@ -43,6 +46,8 @@ static void configDefaults() {
     strncpy(cfg_device_name, "esp-claw", sizeof(cfg_device_name));
     cfg_nats_host[0] = '\0';
     cfg_nats_port = 4222;
+    cfg_telegram_token[0] = '\0';
+    cfg_telegram_chat_id[0] = '\0';
     strncpy(cfg_system_prompt,
         "You are esp-claw, a helpful AI assistant running on an ESP32 microcontroller. "
         "Be concise. Keep responses under 200 words unless asked for detail.",
@@ -146,6 +151,8 @@ static bool loadConfig() {
         if (jsonGetString(json_buf, "nats_port", port_buf, sizeof(port_buf))) {
             cfg_nats_port = atoi(port_buf);
         }
+        jsonGetString(json_buf, "telegram_token", cfg_telegram_token, sizeof(cfg_telegram_token));
+        jsonGetString(json_buf, "telegram_chat_id", cfg_telegram_chat_id, sizeof(cfg_telegram_chat_id));
     } else {
         Serial.printf("LittleFS: no config.json, using defaults\n");
     }
@@ -191,6 +198,112 @@ struct Turn {
 
 static Turn history[MAX_HISTORY];
 static int  historyCount = 0;
+
+/*============================================================================
+ * History Persistence (LittleFS)
+ *============================================================================*/
+
+#define HISTORY_FILE "/history.json"
+
+static int jsonEscape(char *dst, int dst_len, const char *src) {
+    int w = 0;
+    for (int i = 0; src[i] && w < dst_len - 1; i++) {
+        char c = src[i];
+        if (c == '"' || c == '\\') {
+            if (w + 2 >= dst_len) break;
+            dst[w++] = '\\';
+            dst[w++] = c;
+        } else if (c == '\n') {
+            if (w + 2 >= dst_len) break;
+            dst[w++] = '\\';
+            dst[w++] = 'n';
+        } else if (c == '\r' || (uint8_t)c < 0x20) {
+            /* skip control chars */
+        } else {
+            dst[w++] = c;
+        }
+    }
+    dst[w] = '\0';
+    return w;
+}
+
+static void historySave() {
+    File f = LittleFS.open(HISTORY_FILE, "w");
+    if (!f) return;
+
+    static char escaped[LLM_MAX_RESPONSE_LEN + 512];
+
+    f.print("[");
+    for (int i = 0; i < historyCount; i++) {
+        if (i > 0) f.print(",");
+        f.print("{\"u\":\"");
+        jsonEscape(escaped, sizeof(escaped), history[i].user);
+        f.print(escaped);
+        f.print("\",\"a\":\"");
+        jsonEscape(escaped, sizeof(escaped), history[i].assistant);
+        f.print(escaped);
+        f.print("\"}");
+    }
+    f.print("]");
+    f.close();
+
+    if (g_debug) Serial.printf("History: saved %d turns\n", historyCount);
+}
+
+static void historyLoad() {
+    static char buf[8192];
+    int len = readFile(HISTORY_FILE, buf, sizeof(buf));
+    if (len <= 0) return;
+
+    historyCount = 0;
+    const char *p = buf;
+
+    while (*p && historyCount < MAX_HISTORY) {
+        const char *uStart = strstr(p, "\"u\":\"");
+        if (!uStart) break;
+        uStart += 5;
+
+        int w = 0;
+        const char *s = uStart;
+        while (*s && *s != '"' && w < (int)sizeof(history[0].user) - 1) {
+            if (*s == '\\' && *(s + 1)) {
+                s++;
+                if (*s == 'n') history[historyCount].user[w++] = '\n';
+                else history[historyCount].user[w++] = *s;
+            } else {
+                history[historyCount].user[w++] = *s;
+            }
+            s++;
+        }
+        history[historyCount].user[w] = '\0';
+
+        const char *aStart = strstr(s, "\"a\":\"");
+        if (!aStart) break;
+        aStart += 5;
+
+        w = 0;
+        s = aStart;
+        while (*s && *s != '"' && w < (int)sizeof(history[0].assistant) - 1) {
+            if (*s == '\\' && *(s + 1)) {
+                s++;
+                if (*s == 'n') history[historyCount].assistant[w++] = '\n';
+                else history[historyCount].assistant[w++] = *s;
+            } else {
+                history[historyCount].assistant[w++] = *s;
+            }
+            s++;
+        }
+        history[historyCount].assistant[w] = '\0';
+
+        history[historyCount].used = true;
+        historyCount++;
+        p = s;
+    }
+
+    if (historyCount > 0) {
+        Serial.printf("History: loaded %d turns from %s\n", historyCount, HISTORY_FILE);
+    }
+}
 
 /*============================================================================
  * WiFi
@@ -338,6 +451,7 @@ const char *chatWithLLM(const char *userMessage) {
                 sizeof(history[slot].assistant) - 1);
         history[slot].assistant[sizeof(history[slot].assistant) - 1] = '\0';
         history[slot].used = true;
+        historySave();
 
         return finalContent;
 
@@ -448,6 +562,7 @@ static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
             millis() / 1000);
     } else if (strcmp(cmdBuf, "clear") == 0) {
         historyCount = 0;
+        LittleFS.remove(HISTORY_FILE);
         snprintf(responseBuf, sizeof(responseBuf), "History cleared");
     } else if (strcmp(cmdBuf, "heap") == 0) {
         snprintf(responseBuf, sizeof(responseBuf), "Free heap: %u bytes",
@@ -531,6 +646,250 @@ static bool connectNats() {
 }
 
 /*============================================================================
+ * Telegram Bot
+ *============================================================================*/
+
+static WiFiClientSecure tgClient;
+static bool g_telegram_enabled = false;
+static int  tgLastUpdateId = 0;
+static unsigned long tgLastPoll = 0;
+static unsigned long tgLastActivity = 0; /* 0 = no recent activity, but see init in setup */
+#define TG_POLL_IDLE_MS   10000  /* 10s when idle */
+#define TG_POLL_ACTIVE_MS  3000  /* 3s after recent activity */
+#define TG_ACTIVITY_WINDOW 60000 /* consider "active" for 60s after last message */
+
+static const char *TG_HOST = "api.telegram.org";
+static const int   TG_PORT = 443;
+
+/**
+ * Make an HTTPS request to Telegram Bot API.
+ * Writes response body into buf, returns body length or -1 on error.
+ */
+static int tgApiCall(const char *method, const char *body, int body_len,
+                     char *buf, int buf_len) {
+    tgClient.stop(); /* Ensure clean state from any previous connection */
+
+    if (!tgClient.connect(TG_HOST, TG_PORT)) {
+        if (g_debug) Serial.printf("[TG] Connect failed\n");
+        return -1;
+    }
+
+    /* Build full request in one buffer to send at once */
+    static char httpReq[512];
+    int hdr_len = snprintf(httpReq, sizeof(httpReq),
+        "POST /bot%s/%s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n\r\n",
+        cfg_telegram_token, method, TG_HOST, body_len);
+
+    tgClient.write((uint8_t *)httpReq, hdr_len);
+    if (body_len > 0) {
+        tgClient.write((uint8_t *)body, body_len);
+    }
+
+    /* Wait for response */
+    unsigned long wait_start = millis();
+    while (!tgClient.available()) {
+        if (!tgClient.connected()) {
+            Serial.printf("[TG] Disconnected while waiting\n");
+            tgClient.stop();
+            return -1;
+        }
+        if (millis() - wait_start > 15000) {
+            Serial.printf("[TG] Response timeout\n");
+            tgClient.stop();
+            return -1;
+        }
+        delay(100);
+    }
+
+    /* Read status line and headers, extract Content-Length */
+    int content_length = -1;
+    while (tgClient.connected()) {
+        String line = tgClient.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) break;
+        if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+            content_length = line.substring(15).toInt();
+        }
+    }
+
+    /* Read body — use Content-Length to avoid SSL error on server close */
+    int total = 0;
+    if (content_length > 0) {
+        int to_read = content_length < buf_len - 1 ? content_length : buf_len - 1;
+        total = tgClient.readBytes(buf, to_read);
+    } else {
+        /* Fallback: read until disconnect */
+        unsigned long last_data = millis();
+        while (total < buf_len - 1) {
+            int avail = tgClient.available();
+            if (avail > 0) {
+                int rd = tgClient.readBytes(buf + total, min(avail, buf_len - 1 - total));
+                total += rd;
+                last_data = millis();
+            } else if (!tgClient.connected()) {
+                break;
+            } else if (millis() - last_data > 5000) {
+                break;
+            } else {
+                delay(10);
+            }
+        }
+    }
+
+    tgClient.stop();
+    buf[total] = '\0';
+    if (g_debug) Serial.printf("[TG] %s: %d bytes\n", method, total);
+    return total;
+}
+
+/**
+ * Send a message to the allowed chat.
+ */
+static bool tgSendMessage(const char *text) {
+    static char req[LLM_MAX_RESPONSE_LEN + 256];
+    static char escaped[LLM_MAX_RESPONSE_LEN + 128];
+
+    /* Escape the text for JSON */
+    int w = 0;
+    for (int i = 0; text[i] && w < (int)sizeof(escaped) - 2; i++) {
+        char c = text[i];
+        if (c == '"' || c == '\\') {
+            escaped[w++] = '\\';
+            escaped[w++] = c;
+        } else if (c == '\n') {
+            escaped[w++] = '\\';
+            escaped[w++] = 'n';
+        } else if ((uint8_t)c >= 0x20) {
+            escaped[w++] = c;
+        }
+    }
+    escaped[w] = '\0';
+
+    int req_len = snprintf(req, sizeof(req),
+        "{\"chat_id\":%s,\"text\":\"%s\"}", cfg_telegram_chat_id, escaped);
+
+    static char resp[256];
+    int rlen = tgApiCall("sendMessage", req, req_len, resp, sizeof(resp));
+    if (rlen < 0) {
+        Serial.printf("[TG] sendMessage failed\n");
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Poll for new messages and process them.
+ */
+static void tgPoll() {
+    static char req[128];
+    int req_len = snprintf(req, sizeof(req),
+        "{\"offset\":%d,\"limit\":1,\"timeout\":0}",
+        tgLastUpdateId + 1);
+
+    static char resp[2048];
+    int rlen = tgApiCall("getUpdates", req, req_len, resp, sizeof(resp));
+    if (rlen <= 0) {
+        if (g_debug) Serial.printf("[TG] poll: no response (%d)\n", rlen);
+        return;
+    }
+
+    if (g_debug) Serial.printf("[TG] poll: %d bytes: %.200s\n", rlen, resp);
+
+    /* Quick check: is there a result with "update_id"? */
+    const char *uid_str = strstr(resp, "\"update_id\"");
+    if (!uid_str) return; /* No updates — normal */
+
+    /* Parse update_id */
+    const char *p = uid_str + 11;
+    while (*p == ':' || *p == ' ') p++;
+    int update_id = atoi(p);
+    if (g_debug) Serial.printf("[TG] update_id=%d (last=%d)\n", update_id, tgLastUpdateId);
+    if (update_id <= tgLastUpdateId) return;
+    tgLastUpdateId = update_id;
+
+    /* Extract chat_id from message.chat.id */
+    const char *chat_id_str = strstr(resp, "\"chat\"");
+    if (!chat_id_str) { if (g_debug) Serial.printf("[TG] no chat field\n"); return; }
+    const char *id_str = strstr(chat_id_str, "\"id\"");
+    if (!id_str) { if (g_debug) Serial.printf("[TG] no id in chat\n"); return; }
+    p = id_str + 4;
+    while (*p == ':' || *p == ' ') p++;
+    char incoming_chat_id[16];
+    int cw = 0;
+    while ((*p >= '0' && *p <= '9') || *p == '-') {
+        if (cw < (int)sizeof(incoming_chat_id) - 1)
+            incoming_chat_id[cw++] = *p;
+        p++;
+    }
+    incoming_chat_id[cw] = '\0';
+
+    if (g_debug) Serial.printf("[TG] chat_id=%s (allowed=%s)\n", incoming_chat_id, cfg_telegram_chat_id);
+
+    /* Security: only allow configured chat_id */
+    if (strcmp(incoming_chat_id, cfg_telegram_chat_id) != 0) {
+        Serial.printf("[TG] Rejected chat %s\n", incoming_chat_id);
+        return;
+    }
+
+    /* Extract message text — find "text":"..." */
+    const char *text_key = strstr(resp, "\"text\"");
+    if (!text_key) { if (g_debug) Serial.printf("[TG] no text field\n"); return; }
+    p = text_key + 6;
+    while (*p == ':' || *p == ' ') p++;
+    if (*p != '"') { if (g_debug) Serial.printf("[TG] text not a string\n"); return; }
+    p++;
+
+    static char msgBuf[512];
+    int mw = 0;
+    while (*p && *p != '"' && mw < (int)sizeof(msgBuf) - 1) {
+        if (*p == '\\' && *(p + 1)) {
+            p++;
+            if (*p == 'n') msgBuf[mw++] = '\n';
+            else msgBuf[mw++] = *p;
+        } else {
+            msgBuf[mw++] = *p;
+        }
+        p++;
+    }
+    msgBuf[mw] = '\0';
+
+    if (mw == 0) { if (g_debug) Serial.printf("[TG] empty text\n"); return; }
+
+    Serial.printf("\n[TG] Message from %s: %s\n", incoming_chat_id, msgBuf);
+    tgLastActivity = millis();
+
+    /* Run chat */
+    const char *response = chatWithLLM(msgBuf);
+
+    /* Send response back to Telegram */
+    if (response) {
+        tgSendMessage(response);
+    } else {
+        tgSendMessage("[error: LLM call failed]");
+    }
+
+    Serial.printf("> ");
+}
+
+/**
+ * Called from loop() — polls Telegram at adaptive intervals.
+ */
+static void telegramCheck() {
+    unsigned long now = millis();
+    unsigned long interval = (tgLastActivity > 0 && now - tgLastActivity < TG_ACTIVITY_WINDOW)
+                             ? TG_POLL_ACTIVE_MS : TG_POLL_IDLE_MS;
+
+    if (now - tgLastPoll < interval) return;
+    tgLastPoll = now;
+
+    tgPoll();
+}
+
+/*============================================================================
  * Serial Commands
  *============================================================================*/
 
@@ -548,6 +907,7 @@ void handleSerialCommand(const char *input) {
         Serial.printf("NATS: %s\n", g_nats_enabled
             ? (g_nats_connected ? "connected" : "disconnected")
             : "disabled");
+        Serial.printf("Telegram: %s\n", g_telegram_enabled ? "enabled" : "disabled");
         Serial.printf("Uptime: %lus\n", millis() / 1000);
         Serial.printf("> ");
         return;
@@ -555,6 +915,7 @@ void handleSerialCommand(const char *input) {
 
     if (strcmp(input, "/clear") == 0) {
         historyCount = 0;
+        LittleFS.remove(HISTORY_FILE);
         Serial.printf("Conversation history cleared.\n> ");
         return;
     }
@@ -579,6 +940,7 @@ void handleSerialCommand(const char *input) {
         Serial.printf("Device:    %s\n", cfg_device_name);
         Serial.printf("NATS:      %s:%d (%s)\n", cfg_nats_host, cfg_nats_port,
                       g_nats_enabled ? "enabled" : "disabled");
+        Serial.printf("Telegram:  %s\n", g_telegram_enabled ? "enabled" : "disabled");
         Serial.printf("Prompt:    %d chars\n", (int)strlen(cfg_system_prompt));
         Serial.printf("> ");
         return;
@@ -586,6 +948,31 @@ void handleSerialCommand(const char *input) {
 
     if (strcmp(input, "/prompt") == 0) {
         Serial.printf("--- system prompt ---\n%s\n---\n> ", cfg_system_prompt);
+        return;
+    }
+
+    if (strcmp(input, "/history") == 0 || strcmp(input, "/history full") == 0) {
+        bool full = (strcmp(input, "/history full") == 0);
+        if (historyCount == 0) {
+            Serial.printf("No conversation history.\n> ");
+            return;
+        }
+        Serial.printf("--- history (%d turns) ---\n", historyCount);
+        for (int i = 0; i < historyCount; i++) {
+            Serial.printf("[%d] User: %s\n", i + 1, history[i].user);
+            if (full) {
+                Serial.printf("[%d] Assistant: %s\n\n", i + 1, history[i].assistant);
+            } else {
+                int len = strlen(history[i].assistant);
+                if (len > 200) {
+                    Serial.printf("[%d] Assistant: %.200s... (%d chars)\n\n",
+                                  i + 1, history[i].assistant, len);
+                } else {
+                    Serial.printf("[%d] Assistant: %s\n\n", i + 1, history[i].assistant);
+                }
+            }
+        }
+        Serial.printf("---\n> ");
         return;
     }
 
@@ -600,6 +987,7 @@ void handleSerialCommand(const char *input) {
         Serial.printf("  /status  - Show device status\n");
         Serial.printf("  /config  - Show loaded config\n");
         Serial.printf("  /prompt  - Show system prompt\n");
+        Serial.printf("  /history - Show conversation history (add 'full' for complete text)\n");
         Serial.printf("  /clear   - Clear conversation history\n");
         Serial.printf("  /heap    - Show free memory\n");
         Serial.printf("  /debug   - Toggle debug output\n");
@@ -625,11 +1013,12 @@ void setup() {
 
     Serial.printf("\n\n");
     Serial.printf("========================================\n");
-    Serial.printf("  esp-claw - ESP32 AI Agent v0.4.0\n");
+    Serial.printf("  esp-claw - ESP32 AI Agent v0.6.0\n");
     Serial.printf("========================================\n\n");
 
     /* Load config from LittleFS */
     loadConfig();
+    historyLoad();
     Serial.printf("Model: %s\n", cfg_model);
 
     if (cfg_wifi_ssid[0] == '\0' || cfg_api_key[0] == '\0') {
@@ -650,6 +1039,12 @@ void setup() {
     /* Init LLM client */
     llm.begin(cfg_api_key, cfg_model);
 
+    /* Watchdog — reconfigure to 60s (Arduino already inits WDT at 5s) */
+    esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 60000, .idle_core_mask = 0,
+                                       .trigger_panic = true };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+    esp_task_wdt_add(NULL); /* Add loop task */
+
     /* Connect NATS (optional) */
     if (cfg_nats_host[0] != '\0') {
         g_nats_enabled = true;
@@ -661,12 +1056,40 @@ void setup() {
         Serial.printf("NATS: disabled (no nats_host in config)\n");
     }
 
+    /* Telegram (optional) */
+    if (cfg_telegram_token[0] != '\0' && cfg_telegram_chat_id[0] != '\0') {
+        g_telegram_enabled = true;
+        tgClient.setInsecure();
+        tgClient.setTimeout(30); /* seconds — matches LLM client pattern */
+        tgLastPoll = millis();   /* delay first poll by one interval */
+        Serial.printf("Telegram: enabled (chat_id %s)\n", cfg_telegram_chat_id);
+    } else {
+        Serial.printf("Telegram: disabled (no telegram_token/telegram_chat_id in config)\n");
+    }
+
     Serial.printf("\nReady! Free heap: %u bytes\n", ESP.getFreeHeap());
     Serial.printf("Type a message and press Enter. /help for commands.\n\n");
     Serial.printf("> ");
 }
 
+/* LED heartbeat state */
+static unsigned long lastHeartbeat = 0;
+#define HEARTBEAT_INTERVAL_MS 3000
+
 void loop() {
+    esp_task_wdt_reset(); /* Feed the watchdog */
+
+    /* LED heartbeat — brief dim green blink when idle */
+    if (!g_led_user) {
+        unsigned long now = millis();
+        if (now - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
+            lastHeartbeat = now;
+            led(0, 40, 0); /* dim green */
+            delay(50);
+            ledOff();
+        }
+    }
+
     /* Check WiFi */
     if (WiFi.status() != WL_CONNECTED) {
         Serial.printf("\nWiFi disconnected! Reconnecting...\n");
@@ -694,6 +1117,11 @@ void loop() {
                 connectNats();
             }
         }
+    }
+
+    /* Poll Telegram */
+    if (g_telegram_enabled) {
+        telegramCheck();
     }
 
     /* Read serial input character by character */
