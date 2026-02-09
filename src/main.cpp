@@ -3,7 +3,7 @@
  * @brief esp-claw - ESP32 AI Agent
  *
  * A reimplementation of PicoClaw's core agent loop for ESP32.
- * Phase 2: LittleFS config + system prompt from filesystem.
+ * Phase 4: NATS integration for remote control + tool calling.
  *
  * Type a message in the serial monitor, get an LLM response.
  * Use 115200 baud, send with newline.
@@ -13,6 +13,8 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include "llm_client.h"
+#include "tools.h"
+#include <nats_atoms.h>
 
 /*============================================================================
  * Configuration
@@ -28,6 +30,8 @@ static char cfg_wifi_pass[64];
 static char cfg_api_key[128];
 static char cfg_model[64];
 static char cfg_device_name[32];
+static char cfg_nats_host[64];
+static int  cfg_nats_port = 4222;
 static char cfg_system_prompt[4096];
 
 /* Placeholder defaults — overridden by LittleFS config.json */
@@ -37,6 +41,8 @@ static void configDefaults() {
     cfg_api_key[0] = '\0';
     strncpy(cfg_model, "openai/gpt-4o-mini", sizeof(cfg_model));
     strncpy(cfg_device_name, "esp-claw", sizeof(cfg_device_name));
+    cfg_nats_host[0] = '\0';
+    cfg_nats_port = 4222;
     strncpy(cfg_system_prompt,
         "You are esp-claw, a helpful AI assistant running on an ESP32 microcontroller. "
         "Be concise. Keep responses under 200 words unless asked for detail.",
@@ -135,6 +141,11 @@ static bool loadConfig() {
         jsonGetString(json_buf, "api_key", cfg_api_key, sizeof(cfg_api_key));
         jsonGetString(json_buf, "model", cfg_model, sizeof(cfg_model));
         jsonGetString(json_buf, "device_name", cfg_device_name, sizeof(cfg_device_name));
+        jsonGetString(json_buf, "nats_host", cfg_nats_host, sizeof(cfg_nats_host));
+        char port_buf[8];
+        if (jsonGetString(json_buf, "nats_port", port_buf, sizeof(port_buf))) {
+            cfg_nats_port = atoi(port_buf);
+        }
     } else {
         Serial.printf("LittleFS: no config.json, using defaults\n");
     }
@@ -155,10 +166,21 @@ static bool loadConfig() {
  *============================================================================*/
 
 bool g_debug = false;
+bool g_led_user = false; /* true when LED was set by a tool — don't overwrite with status */
 
 LlmClient llm;
 char serialBuf[SERIAL_BUF_SIZE];
 int  serialPos = 0;
+
+/* NATS client (optional — only used if nats_host is configured) */
+NatsClient natsClient;
+bool g_nats_enabled = false;
+bool g_nats_connected = false;
+static unsigned long natsLastReconnect = 0;
+#define NATS_RECONNECT_DELAY_MS 5000
+static char natsSubjectChat[64];
+static char natsSubjectCmd[64];
+static char natsSubjectEvents[64];
 
 /* Conversation history */
 struct Turn {
@@ -200,70 +222,312 @@ bool connectWiFi() {
 }
 
 /*============================================================================
- * Chat with LLM
+ * Chat with LLM — Agentic Loop with Tool Calling
  *============================================================================*/
 
-void chatWithLLM(const char *userMessage) {
+#define MAX_AGENT_ITERATIONS 5
+
+/* Static storage for tool call results (persists across loop iterations) */
+static char toolResultBufs[LLM_MAX_TOOL_CALLS][TOOL_RESULT_MAX_LEN];
+static char toolCallJsonBuf[1024]; /* copy of tool_calls_json for message building */
+
+/**
+ * Run the agentic chat loop. Returns pointer to the response text
+ * (valid until next call), or nullptr on error.
+ */
+const char *chatWithLLM(const char *userMessage) {
+    g_led_user = false; /* Reset — status LEDs allowed until a tool sets the LED */
     ledBlue(); /* Thinking... */
 
-    /* Build messages array: system + history + current user message */
-    LlmMessage messages[1 + MAX_HISTORY * 2 + 1]; /* system + pairs + current */
+    /*
+     * Message array for the full agentic conversation.
+     * Layout: system + history pairs + user + [assistant+tool results]*iterations
+     * Static to avoid blowing the 8KB loop task stack.
+     */
+    static LlmMessage messages[LLM_MAX_MESSAGES];
     int msgCount = 0;
 
     /* System prompt */
-    messages[msgCount++] = {"system", cfg_system_prompt};
+    messages[msgCount++] = llmMsg("system", cfg_system_prompt);
 
     /* History */
-    for (int i = 0; i < historyCount; i++) {
-        messages[msgCount++] = {"user", history[i].user};
-        messages[msgCount++] = {"assistant", history[i].assistant};
+    for (int i = 0; i < historyCount && msgCount < LLM_MAX_MESSAGES - 2; i++) {
+        messages[msgCount++] = llmMsg("user", history[i].user);
+        messages[msgCount++] = llmMsg("assistant", history[i].assistant);
     }
 
     /* Current user message */
-    messages[msgCount++] = {"user", userMessage};
+    messages[msgCount++] = llmMsg("user", userMessage);
 
     Serial.printf("\n--- Thinking... ---\n");
     unsigned long t0 = millis();
 
-    LlmResult result;
-    bool ok = llm.chat(messages, msgCount, &result);
+    const char *tools_json = toolsGetDefinitions();
+    static LlmResult result;
+    int totalPromptTokens = 0;
+    int totalCompletionTokens = 0;
+    const char *finalContent = nullptr;
+    bool ok = false;
+
+    for (int iter = 0; iter < MAX_AGENT_ITERATIONS; iter++) {
+        ok = llm.chat(messages, msgCount, tools_json, &result);
+        if (!ok) break;
+
+        totalPromptTokens += result.prompt_tokens;
+        totalCompletionTokens += result.completion_tokens;
+
+        /* No tool calls — we're done */
+        if (result.tool_call_count == 0) {
+            finalContent = result.content;
+            break;
+        }
+
+        /* Execute tool calls */
+        Serial.printf("[Agent] %d tool call(s) in iteration %d:\n",
+                      result.tool_call_count, iter + 1);
+
+        /* Save tool_calls_json for message building */
+        strncpy(toolCallJsonBuf, result.tool_calls_json, sizeof(toolCallJsonBuf) - 1);
+        toolCallJsonBuf[sizeof(toolCallJsonBuf) - 1] = '\0';
+
+        /* Add assistant message with tool calls */
+        if (msgCount < LLM_MAX_MESSAGES) {
+            messages[msgCount++] = llmToolCallMsg(
+                result.content[0] ? result.content : nullptr,
+                toolCallJsonBuf);
+        }
+
+        /* Execute each tool and add result messages */
+        for (int t = 0; t < result.tool_call_count && msgCount < LLM_MAX_MESSAGES; t++) {
+            LlmToolCall *tc = &result.tool_calls[t];
+
+            Serial.printf("  -> %s(%s)\n", tc->name, tc->arguments);
+
+            toolExecute(tc->name, tc->arguments,
+                        toolResultBufs[t], TOOL_RESULT_MAX_LEN);
+
+            Serial.printf("     = %s\n", toolResultBufs[t]);
+
+            messages[msgCount++] = llmToolResult(tc->id, toolResultBufs[t]);
+        }
+
+        if (!g_led_user) ledPurple(); /* Show we're in a tool loop */
+    }
 
     unsigned long elapsed = millis() - t0;
 
-    if (ok) {
-        ledGreen();
+    if (ok && finalContent && finalContent[0]) {
+        if (!g_led_user) ledGreen();
 
-        /* Print response */
-        Serial.printf("\n%s\n", result.content);
+        Serial.printf("\n%s\n", finalContent);
         Serial.printf("--- (%lums, %d+%d tokens) ---\n\n",
-                      elapsed,
-                      result.prompt_tokens,
-                      result.completion_tokens);
+                      elapsed, totalPromptTokens, totalCompletionTokens);
 
         /* Save to history (circular buffer) */
-        int slot = historyCount < MAX_HISTORY ? historyCount : 0;
+        int slot;
         if (historyCount >= MAX_HISTORY) {
-            /* Shift history down by 1 to drop oldest */
-            for (int i = 0; i < MAX_HISTORY - 1; i++) {
+            for (int i = 0; i < MAX_HISTORY - 1; i++)
                 history[i] = history[i + 1];
-            }
             slot = MAX_HISTORY - 1;
         } else {
-            historyCount++;
+            slot = historyCount++;
         }
         strncpy(history[slot].user, userMessage, sizeof(history[slot].user) - 1);
         history[slot].user[sizeof(history[slot].user) - 1] = '\0';
-        strncpy(history[slot].assistant, result.content,
+        strncpy(history[slot].assistant, finalContent,
                 sizeof(history[slot].assistant) - 1);
         history[slot].assistant[sizeof(history[slot].assistant) - 1] = '\0';
         history[slot].used = true;
 
+        return finalContent;
+
+    } else if (ok) {
+        /* Tools executed but no final text (LLM only used tools) */
+        if (!g_led_user) ledGreen();
+        Serial.printf("\n[Agent] Tools executed, no text response.\n");
+        Serial.printf("--- (%lums, %d+%d tokens) ---\n\n",
+                      elapsed, totalPromptTokens, totalCompletionTokens);
+        return "[Tools executed, no text response]";
     } else {
         ledRed();
         Serial.printf("\n[ERROR] LLM call failed: %s\n\n", llm.lastError());
+        return nullptr;
+    }
+}
+
+/*============================================================================
+ * NATS Callbacks
+ *============================================================================*/
+
+static void onNatsEvent(nats_client_t *client, nats_event_t event,
+                        void *userdata) {
+    (void)client; (void)userdata;
+    switch (event) {
+    case NATS_EVENT_CONNECTED:
+        Serial.printf("NATS: connected\n");
+        g_nats_connected = true;
+        break;
+    case NATS_EVENT_DISCONNECTED:
+        Serial.printf("NATS: disconnected\n");
+        g_nats_connected = false;
+        break;
+    case NATS_EVENT_ERROR:
+        Serial.printf("NATS: error: %s\n",
+                      nats_err_str(nats_get_last_error(client)));
+        break;
+    default:
+        break;
+    }
+}
+
+/**
+ * NATS chat handler — request/reply. Caller sends a message,
+ * we run the agentic loop and respond with the LLM answer.
+ */
+static void onNatsChat(nats_client_t *client, const nats_msg_t *msg,
+                       void *userdata) {
+    (void)userdata;
+    if (msg->data_len == 0) return;
+
+    /* Copy payload (not null-terminated) */
+    static char chatBuf[512];
+    size_t len = msg->data_len < sizeof(chatBuf) - 1
+                 ? msg->data_len : sizeof(chatBuf) - 1;
+    memcpy(chatBuf, msg->data, len);
+    chatBuf[len] = '\0';
+
+    Serial.printf("\n[NATS] chat: %s\n", chatBuf);
+
+    const char *response = chatWithLLM(chatBuf);
+
+    /* Reply if caller expects a response */
+    if (msg->reply_len > 0) {
+        if (response) {
+            nats_msg_respond_str(client, msg, response);
+        } else {
+            nats_msg_respond_str(client, msg, "[error]");
+        }
     }
 
-    Serial.printf("> "); /* Prompt for next input */
+    /* Also publish to events */
+    if (response && g_nats_connected) {
+        natsClient.publish(natsSubjectEvents, response);
+    }
+
+    Serial.printf("> ");
+}
+
+/**
+ * NATS command handler — same commands as serial.
+ */
+static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
+                      void *userdata) {
+    (void)client; (void)userdata;
+    if (msg->data_len == 0) return;
+
+    static char cmdBuf[64];
+    size_t len = msg->data_len < sizeof(cmdBuf) - 1
+                 ? msg->data_len : sizeof(cmdBuf) - 1;
+    memcpy(cmdBuf, msg->data, len);
+    cmdBuf[len] = '\0';
+
+    Serial.printf("\n[NATS] cmd: %s\n", cmdBuf);
+
+    static char responseBuf[512];
+
+    if (strcmp(cmdBuf, "status") == 0) {
+        snprintf(responseBuf, sizeof(responseBuf),
+            "WiFi: %s (%s), Heap: %u/%u, History: %d, Model: %s, "
+            "Debug: %s, NATS: %s, Uptime: %lus",
+            WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
+            WiFi.localIP().toString().c_str(),
+            ESP.getFreeHeap(), ESP.getHeapSize(),
+            historyCount, cfg_model,
+            g_debug ? "ON" : "OFF",
+            g_nats_connected ? "connected" : "disconnected",
+            millis() / 1000);
+    } else if (strcmp(cmdBuf, "clear") == 0) {
+        historyCount = 0;
+        snprintf(responseBuf, sizeof(responseBuf), "History cleared");
+    } else if (strcmp(cmdBuf, "heap") == 0) {
+        snprintf(responseBuf, sizeof(responseBuf), "Free heap: %u bytes",
+                 ESP.getFreeHeap());
+    } else if (strcmp(cmdBuf, "debug") == 0) {
+        g_debug = !g_debug;
+        snprintf(responseBuf, sizeof(responseBuf), "Debug %s",
+                 g_debug ? "ON" : "OFF");
+    } else if (strcmp(cmdBuf, "reboot") == 0) {
+        if (g_nats_connected) {
+            natsClient.publish(natsSubjectEvents, "Rebooting...");
+        }
+        delay(500);
+        ESP.restart();
+        return;
+    } else {
+        snprintf(responseBuf, sizeof(responseBuf),
+                 "Unknown command: %s (try: status, clear, heap, debug, reboot)",
+                 cmdBuf);
+    }
+
+    Serial.printf("[NATS] -> %s\n> ", responseBuf);
+
+    /* Reply if request/reply, also publish to events */
+    if (msg->reply_len > 0) {
+        nats_msg_respond_str(natsClient.core(), msg, responseBuf);
+    }
+    if (g_nats_connected) {
+        natsClient.publish(natsSubjectEvents, responseBuf);
+    }
+}
+
+/**
+ * Build NATS subject strings from device_name prefix.
+ */
+static void buildNatsSubjects() {
+    snprintf(natsSubjectChat, sizeof(natsSubjectChat),
+             "%s.chat", cfg_device_name);
+    snprintf(natsSubjectCmd, sizeof(natsSubjectCmd),
+             "%s.cmd", cfg_device_name);
+    snprintf(natsSubjectEvents, sizeof(natsSubjectEvents),
+             "%s.events", cfg_device_name);
+}
+
+/**
+ * Connect to NATS server and subscribe to topics.
+ */
+static bool connectNats() {
+    Serial.printf("NATS: connecting to %s:%d...\n", cfg_nats_host, cfg_nats_port);
+
+    natsClient.onEvent(onNatsEvent, nullptr);
+
+    if (!natsClient.connect(cfg_nats_host, (uint16_t)cfg_nats_port, 5000)) {
+        Serial.printf("NATS: connection failed\n");
+        return false;
+    }
+
+    /* Subscribe to chat and cmd */
+    nats_err_t err;
+    err = natsClient.subscribe(natsSubjectChat, onNatsChat, nullptr);
+    if (err != NATS_OK) {
+        Serial.printf("NATS: subscribe %s failed: %s\n",
+                      natsSubjectChat, nats_err_str(err));
+    }
+
+    err = natsClient.subscribe(natsSubjectCmd, onNatsCmd, nullptr);
+    if (err != NATS_OK) {
+        Serial.printf("NATS: subscribe %s failed: %s\n",
+                      natsSubjectCmd, nats_err_str(err));
+    }
+
+    /* Publish online event */
+    static char onlineMsg[128];
+    snprintf(onlineMsg, sizeof(onlineMsg),
+             "{\"event\":\"online\",\"device\":\"%s\",\"ip\":\"%s\"}",
+             cfg_device_name, WiFi.localIP().toString().c_str());
+    natsClient.publish(natsSubjectEvents, onlineMsg);
+
+    Serial.printf("NATS: subscribed to %s, %s\n", natsSubjectChat, natsSubjectCmd);
+    return true;
 }
 
 /*============================================================================
@@ -281,6 +545,9 @@ void handleSerialCommand(const char *input) {
         Serial.printf("History: %d turns\n", historyCount);
         Serial.printf("Model: %s\n", cfg_model);
         Serial.printf("Debug: %s\n", g_debug ? "ON" : "OFF");
+        Serial.printf("NATS: %s\n", g_nats_enabled
+            ? (g_nats_connected ? "connected" : "disconnected")
+            : "disabled");
         Serial.printf("Uptime: %lus\n", millis() / 1000);
         Serial.printf("> ");
         return;
@@ -310,6 +577,8 @@ void handleSerialCommand(const char *input) {
         Serial.printf("API key:   %.8s...\n", cfg_api_key);
         Serial.printf("Model:     %s\n", cfg_model);
         Serial.printf("Device:    %s\n", cfg_device_name);
+        Serial.printf("NATS:      %s:%d (%s)\n", cfg_nats_host, cfg_nats_port,
+                      g_nats_enabled ? "enabled" : "disabled");
         Serial.printf("Prompt:    %d chars\n", (int)strlen(cfg_system_prompt));
         Serial.printf("> ");
         return;
@@ -343,6 +612,7 @@ void handleSerialCommand(const char *input) {
 
     /* Unknown command - treat as chat */
     chatWithLLM(input);
+    Serial.printf("> ");
 }
 
 /*============================================================================
@@ -355,7 +625,7 @@ void setup() {
 
     Serial.printf("\n\n");
     Serial.printf("========================================\n");
-    Serial.printf("  esp-claw - ESP32 AI Agent v0.2.0\n");
+    Serial.printf("  esp-claw - ESP32 AI Agent v0.4.0\n");
     Serial.printf("========================================\n\n");
 
     /* Load config from LittleFS */
@@ -380,6 +650,17 @@ void setup() {
     /* Init LLM client */
     llm.begin(cfg_api_key, cfg_model);
 
+    /* Connect NATS (optional) */
+    if (cfg_nats_host[0] != '\0') {
+        g_nats_enabled = true;
+        buildNatsSubjects();
+        if (!connectNats()) {
+            Serial.printf("NATS: will retry in background\n");
+        }
+    } else {
+        Serial.printf("NATS: disabled (no nats_host in config)\n");
+    }
+
     Serial.printf("\nReady! Free heap: %u bytes\n", ESP.getFreeHeap());
     Serial.printf("Type a message and press Enter. /help for commands.\n\n");
     Serial.printf("> ");
@@ -395,6 +676,24 @@ void loop() {
             return;
         }
         Serial.printf("> ");
+    }
+
+    /* Process NATS */
+    if (g_nats_enabled) {
+        if (natsClient.connected()) {
+            nats_err_t err = natsClient.process();
+            if (err != NATS_OK && err != NATS_ERR_WOULD_BLOCK) {
+                if (g_debug) Serial.printf("NATS: process error: %s\n",
+                                           nats_err_str(err));
+            }
+        } else {
+            /* Reconnect with backoff */
+            unsigned long now = millis();
+            if (now - natsLastReconnect > NATS_RECONNECT_DELAY_MS) {
+                natsLastReconnect = now;
+                connectNats();
+            }
+        }
     }
 
     /* Read serial input character by character */
@@ -434,6 +733,7 @@ void loop() {
                 handleSerialCommand(input);
             } else {
                 chatWithLLM(input);
+                Serial.printf("> ");
             }
             continue;
         }

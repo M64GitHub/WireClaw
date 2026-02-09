@@ -1,6 +1,6 @@
 /**
  * @file llm_client.cpp
- * @brief OpenRouter LLM client for ESP32
+ * @brief OpenRouter LLM client for ESP32 — with tool calling support
  */
 
 #include "llm_client.h"
@@ -11,15 +11,8 @@ static const char *OPENROUTER_HOST = "openrouter.ai";
 static const int   OPENROUTER_PORT = 443;
 static const char *OPENROUTER_PATH = "/api/v1/chat/completions";
 
-/* Skip TLS cert validation for now (TODO: add proper root CA pinning) */
+/* ---- JSON helpers ---- */
 
-/* ---- JSON escaping ---- */
-
-/**
- * Escape a string for JSON embedding.
- * Handles: \ " \n \r \t and control chars.
- * Returns bytes written (not counting NUL), or -1 if buf too small.
- */
 static int json_escape(char *dst, int dst_len, const char *src) {
     int w = 0;
     for (int i = 0; src[i] != '\0'; i++) {
@@ -32,10 +25,7 @@ static int json_escape(char *dst, int dst_len, const char *src) {
             case '\r': esc = "\\r";  break;
             case '\t': esc = "\\t";  break;
             default:
-                if ((unsigned char)c < 0x20) {
-                    /* Skip other control chars */
-                    continue;
-                }
+                if ((unsigned char)c < 0x20) continue;
                 if (w + 1 >= dst_len) return -1;
                 dst[w++] = c;
                 continue;
@@ -50,18 +40,8 @@ static int json_escape(char *dst, int dst_len, const char *src) {
     return w;
 }
 
-/* ---- Simple JSON string value extractor ---- */
-
-/**
- * Find a JSON string value by key in a flat or shallow JSON object.
- * Handles escaped quotes inside values.
- * Returns pointer to start of value (after opening quote), sets *out_len.
- * Returns nullptr if not found.
- */
 static const char *json_find_string(const char *json, int json_len,
                                      const char *key, int *out_len) {
-    /* Search for "key":" pattern */
-    int klen = strlen(key);
     char pattern[128];
     int plen = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     if (plen < 0 || plen >= (int)sizeof(pattern)) return nullptr;
@@ -73,7 +53,6 @@ static const char *json_find_string(const char *json, int json_len,
         const char *found = (const char *)memmem(p, end - p, pattern, plen);
         if (!found) return nullptr;
 
-        /* Skip past key and colon */
         const char *after_key = found + plen;
         while (after_key < end && (*after_key == ' ' || *after_key == ':'))
             after_key++;
@@ -83,14 +62,10 @@ static const char *json_find_string(const char *json, int json_len,
             continue;
         }
 
-        /* Extract value between quotes, handling escapes */
         const char *val_start = after_key + 1;
         const char *q = val_start;
         while (q < end) {
-            if (*q == '\\' && q + 1 < end) {
-                q += 2; /* skip escaped char */
-                continue;
-            }
+            if (*q == '\\' && q + 1 < end) { q += 2; continue; }
             if (*q == '"') break;
             q++;
         }
@@ -100,34 +75,24 @@ static const char *json_find_string(const char *json, int json_len,
     return nullptr;
 }
 
-/**
- * Find a JSON integer value by key.
- * Returns the integer value, or default_val if not found.
- */
 static int json_find_int(const char *json, int json_len,
                           const char *key, int default_val) {
-    int klen = strlen(key);
     char pattern[128];
     int plen = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
     if (plen < 0 || plen >= (int)sizeof(pattern)) return default_val;
 
-    const char *end = json + json_len;
     const char *found = (const char *)memmem(json, json_len, pattern, plen);
     if (!found) return default_val;
 
     const char *after_key = found + plen;
+    const char *end = json + json_len;
     while (after_key < end && (*after_key == ' ' || *after_key == ':'))
         after_key++;
-
     if (after_key >= end) return default_val;
 
     return atoi(after_key);
 }
 
-/**
- * Unescape a JSON string value in-place.
- * Converts \n, \t, \\, \", etc. Returns new length.
- */
 static int json_unescape(char *buf, int len) {
     int r = 0, w = 0;
     while (r < len) {
@@ -151,6 +116,48 @@ static int json_unescape(char *buf, int len) {
     return w;
 }
 
+/**
+ * Find a matching closing brace/bracket, handling nesting and strings.
+ * Returns pointer past the closing char, or nullptr.
+ */
+static const char *json_skip_value(const char *p, const char *end) {
+    if (p >= end) return nullptr;
+
+    if (*p == '"') {
+        /* Skip string */
+        p++;
+        while (p < end) {
+            if (*p == '\\' && p + 1 < end) { p += 2; continue; }
+            if (*p == '"') return p + 1;
+            p++;
+        }
+        return nullptr;
+    }
+
+    if (*p == '{' || *p == '[') {
+        char open = *p;
+        char close = (open == '{') ? '}' : ']';
+        int depth = 1;
+        p++;
+        while (p < end && depth > 0) {
+            if (*p == '"') {
+                p = json_skip_value(p, end);
+                if (!p) return nullptr;
+                continue;
+            }
+            if (*p == open) depth++;
+            else if (*p == close) depth--;
+            p++;
+        }
+        return (depth == 0) ? p : nullptr;
+    }
+
+    /* Number, bool, null — skip to next delimiter */
+    while (p < end && *p != ',' && *p != '}' && *p != ']' && *p != '\n')
+        p++;
+    return p;
+}
+
 /* ---- LlmClient implementation ---- */
 
 LlmClient::LlmClient()
@@ -166,41 +173,178 @@ void LlmClient::begin(const char *api_key, const char *model) {
 }
 
 int LlmClient::buildRequest(char *buf, int buf_len,
-                              const LlmMessage *messages, int count) {
+                              const LlmMessage *messages, int count,
+                              const char *tools_json) {
     int w = 0;
 
-    /* Opening */
     w += snprintf(buf + w, buf_len - w,
         "{\"model\":\"%s\",\"messages\":[", m_model);
-
     if (w >= buf_len) return -1;
 
-    /* Messages array */
     for (int i = 0; i < count; i++) {
         if (i > 0) {
             if (w + 1 >= buf_len) return -1;
             buf[w++] = ',';
         }
 
-        w += snprintf(buf + w, buf_len - w,
-            "{\"role\":\"%s\",\"content\":\"", messages[i].role);
-        if (w >= buf_len) return -1;
+        const LlmMessage *msg = &messages[i];
 
-        int esc_len = json_escape(buf + w, buf_len - w, messages[i].content);
-        if (esc_len < 0) return -1;
-        w += esc_len;
+        if (msg->type == LLM_MSG_TOOL_CALL) {
+            /* Assistant message with tool_calls */
+            w += snprintf(buf + w, buf_len - w,
+                "{\"role\":\"assistant\"");
+            if (w >= buf_len) return -1;
 
-        /* Close content string and message object */
-        w += snprintf(buf + w, buf_len - w, "\"}");
+            if (msg->content && msg->content[0]) {
+                w += snprintf(buf + w, buf_len - w, ",\"content\":\"");
+                if (w >= buf_len) return -1;
+                int esc = json_escape(buf + w, buf_len - w, msg->content);
+                if (esc < 0) return -1;
+                w += esc;
+                w += snprintf(buf + w, buf_len - w, "\"");
+            } else {
+                w += snprintf(buf + w, buf_len - w, ",\"content\":null");
+            }
+            if (w >= buf_len) return -1;
+
+            if (msg->tool_calls_json) {
+                w += snprintf(buf + w, buf_len - w,
+                    ",\"tool_calls\":%s", msg->tool_calls_json);
+            }
+            if (w >= buf_len) return -1;
+            w += snprintf(buf + w, buf_len - w, "}");
+
+        } else if (msg->type == LLM_MSG_TOOL_RESULT) {
+            /* Tool result message */
+            w += snprintf(buf + w, buf_len - w,
+                "{\"role\":\"tool\",\"tool_call_id\":\"%s\",\"content\":\"",
+                msg->tool_call_id ? msg->tool_call_id : "");
+            if (w >= buf_len) return -1;
+
+            int esc = json_escape(buf + w, buf_len - w,
+                                   msg->content ? msg->content : "");
+            if (esc < 0) return -1;
+            w += esc;
+            w += snprintf(buf + w, buf_len - w, "\"}");
+
+        } else {
+            /* Normal message */
+            w += snprintf(buf + w, buf_len - w,
+                "{\"role\":\"%s\",\"content\":\"", msg->role);
+            if (w >= buf_len) return -1;
+
+            int esc = json_escape(buf + w, buf_len - w,
+                                   msg->content ? msg->content : "");
+            if (esc < 0) return -1;
+            w += esc;
+            w += snprintf(buf + w, buf_len - w, "\"}");
+        }
+
         if (w >= buf_len) return -1;
     }
 
-    /* Close messages array and request object */
+    w += snprintf(buf + w, buf_len - w, "]");
+    if (w >= buf_len) return -1;
+
+    /* Add tools if provided */
+    if (tools_json && tools_json[0]) {
+        w += snprintf(buf + w, buf_len - w,
+            ",\"tools\":%s,\"tool_choice\":\"auto\"", tools_json);
+        if (w >= buf_len) return -1;
+    }
+
     w += snprintf(buf + w, buf_len - w,
-        "],\"max_tokens\":2048,\"temperature\":0.7}");
+        ",\"max_tokens\":2048,\"temperature\":0.7}");
 
     if (w >= buf_len) return -1;
     return w;
+}
+
+int LlmClient::parseToolCalls(const char *body, int body_len, LlmResult *result) {
+    result->tool_call_count = 0;
+    result->tool_calls_json[0] = '\0';
+
+    /* Find "tool_calls" key */
+    const char *tc_key = "\"tool_calls\"";
+    const char *found = (const char *)memmem(body, body_len, tc_key, strlen(tc_key));
+    if (!found) return 0;
+
+    /* Skip to the array start '[' */
+    const char *end = body + body_len;
+    const char *p = found + strlen(tc_key);
+    while (p < end && *p != '[') p++;
+    if (p >= end) return 0;
+
+    const char *arr_start = p;
+
+    /* Find matching ']' */
+    const char *arr_end = json_skip_value(p, end);
+    if (!arr_end) return 0;
+
+    /* Save raw tool_calls JSON for echoing back */
+    int tc_json_len = arr_end - arr_start;
+    if (tc_json_len < (int)sizeof(result->tool_calls_json) - 1) {
+        memcpy(result->tool_calls_json, arr_start, tc_json_len);
+        result->tool_calls_json[tc_json_len] = '\0';
+    }
+
+    /* Parse individual tool calls from the array */
+    p = arr_start + 1; /* skip '[' */
+    int count = 0;
+
+    while (p < arr_end && count < LLM_MAX_TOOL_CALLS) {
+        /* Find next '{' */
+        while (p < arr_end && *p != '{') p++;
+        if (p >= arr_end) break;
+
+        const char *obj_start = p;
+        const char *obj_end = json_skip_value(p, arr_end);
+        if (!obj_end) break;
+
+        int obj_len = obj_end - obj_start;
+        LlmToolCall *tc = &result->tool_calls[count];
+
+        /* Extract "id" */
+        int id_len = 0;
+        const char *id = json_find_string(obj_start, obj_len, "id", &id_len);
+        if (id && id_len > 0) {
+            int clen = id_len < (int)sizeof(tc->id) - 1 ? id_len : (int)sizeof(tc->id) - 1;
+            memcpy(tc->id, id, clen);
+            tc->id[clen] = '\0';
+        } else {
+            tc->id[0] = '\0';
+        }
+
+        /* Extract function name — find "function" object first */
+        int name_len = 0;
+        const char *name = json_find_string(obj_start, obj_len, "name", &name_len);
+        if (name && name_len > 0) {
+            int clen = name_len < (int)sizeof(tc->name) - 1 ? name_len : (int)sizeof(tc->name) - 1;
+            memcpy(tc->name, name, clen);
+            tc->name[clen] = '\0';
+        } else {
+            tc->name[0] = '\0';
+        }
+
+        /* Extract arguments — it's a JSON string value containing JSON */
+        int args_len = 0;
+        const char *args = json_find_string(obj_start, obj_len, "arguments", &args_len);
+        if (args && args_len > 0) {
+            int clen = args_len < (int)sizeof(tc->arguments) - 1 ? args_len : (int)sizeof(tc->arguments) - 1;
+            memcpy(tc->arguments, args, clen);
+            tc->arguments[clen] = '\0';
+            /* Unescape the JSON string (arguments contain escaped JSON) */
+            json_unescape(tc->arguments, clen);
+        } else {
+            tc->arguments[0] = '\0';
+        }
+
+        count++;
+        p = obj_end;
+    }
+
+    result->tool_call_count = count;
+    return count;
 }
 
 bool LlmClient::parseResponse(const char *body, int body_len, LlmResult *result) {
@@ -209,62 +353,66 @@ bool LlmClient::parseResponse(const char *body, int body_len, LlmResult *result)
     result->content_len = 0;
     result->prompt_tokens = 0;
     result->completion_tokens = 0;
+    result->tool_call_count = 0;
+    result->tool_calls_json[0] = '\0';
+
+    /* Check for tool calls first */
+    int tc_count = parseToolCalls(body, body_len, result);
 
     /* Extract "content" field */
     int clen = 0;
     const char *content = json_find_string(body, body_len, "content", &clen);
-    if (!content || clen <= 0) {
-        /* Check for error message */
+    if (content && clen > 0) {
+        int copy_len = clen < LLM_MAX_RESPONSE_LEN - 1 ? clen : LLM_MAX_RESPONSE_LEN - 1;
+        memcpy(result->content, content, copy_len);
+        result->content[copy_len] = '\0';
+        result->content_len = json_unescape(result->content, copy_len);
+    }
+
+    /* If we got tool calls, that's a success even without content */
+    if (tc_count > 0) {
+        result->ok = true;
+        result->prompt_tokens = json_find_int(body, body_len, "prompt_tokens", 0);
+        result->completion_tokens = json_find_int(body, body_len, "completion_tokens", 0);
+        return true;
+    }
+
+    /* No tool calls — need content */
+    if (result->content_len <= 0) {
         int elen = 0;
         const char *errmsg = json_find_string(body, body_len, "message", &elen);
         if (errmsg && elen > 0) {
-            int copy_len = elen < (int)sizeof(m_error) - 1 ? elen : (int)sizeof(m_error) - 1;
-            memcpy(m_error, errmsg, copy_len);
-            m_error[copy_len] = '\0';
+            int copy = elen < (int)sizeof(m_error) - 1 ? elen : (int)sizeof(m_error) - 1;
+            memcpy(m_error, errmsg, copy);
+            m_error[copy] = '\0';
         } else {
             snprintf(m_error, sizeof(m_error), "No content in response");
         }
         return false;
     }
 
-    /* Copy and unescape content */
-    int copy_len = clen < LLM_MAX_RESPONSE_LEN - 1 ? clen : LLM_MAX_RESPONSE_LEN - 1;
-    memcpy(result->content, content, copy_len);
-    result->content[copy_len] = '\0';
-    result->content_len = json_unescape(result->content, copy_len);
-
-    /* Extract token usage (optional) */
     result->prompt_tokens = json_find_int(body, body_len, "prompt_tokens", 0);
     result->completion_tokens = json_find_int(body, body_len, "completion_tokens", 0);
-
     result->ok = true;
     return true;
 }
 
 int LlmClient::readResponse(char *buf, int buf_len) {
-    /*
-     * Read HTTP response line by line.
-     * Skip headers, find Content-Length or read until connection close.
-     * Return body in buf, length as return value.
-     */
     int content_length = -1;
     bool chunked = false;
-    int http_status = 0;
 
-    /* Read status line */
     String status_line = m_client.readStringUntil('\n');
     if (status_line.length() < 12) {
         snprintf(m_error, sizeof(m_error), "Invalid HTTP response");
         return -1;
     }
-    http_status = status_line.substring(9, 12).toInt();
+    int http_status = status_line.substring(9, 12).toInt();
     if (g_debug) Serial.printf("[LLM] HTTP %d\n", http_status);
 
-    /* Read headers */
     while (m_client.connected()) {
         String header = m_client.readStringUntil('\n');
         header.trim();
-        if (header.length() == 0) break; /* End of headers */
+        if (header.length() == 0) break;
 
         if (header.startsWith("Content-Length:") ||
             header.startsWith("content-length:")) {
@@ -276,22 +424,13 @@ int LlmClient::readResponse(char *buf, int buf_len) {
     }
     if (g_debug) Serial.printf("[LLM] content_length=%d chunked=%d\n", content_length, chunked);
 
-    /*
-     * Read body: use a unified approach that works for both chunked and
-     * non-chunked responses. We read all available data until the connection
-     * closes (we send Connection: close, so server will close when done).
-     * For chunked encoding, this gives us raw chunks with size prefixes,
-     * but the JSON content is still extractable.
-     */
     int total = 0;
 
     if (content_length > 0 && !chunked) {
-        /* Known content length — read exactly that many bytes */
         int to_read = content_length < (buf_len - 1) ?
                       content_length : (buf_len - 1);
         total = m_client.readBytes(buf, to_read);
     } else {
-        /* Chunked or unknown length — read until connection closes */
         unsigned long last_data = millis();
         while (total < buf_len - 1) {
             int avail = m_client.available();
@@ -302,7 +441,7 @@ int LlmClient::readResponse(char *buf, int buf_len) {
                 total += rd;
                 last_data = millis();
             } else if (!m_client.connected()) {
-                break; /* Server closed connection — we're done */
+                break;
             } else if (millis() - last_data > 10000) {
                 if (g_debug) Serial.printf("[LLM] Read timeout after %d bytes\n", total);
                 break;
@@ -316,15 +455,17 @@ int LlmClient::readResponse(char *buf, int buf_len) {
     return total;
 }
 
-bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
+bool LlmClient::chat(const LlmMessage *messages, int count,
+                       const char *tools_json, LlmResult *result) {
     result->ok = false;
     result->content[0] = '\0';
     result->content_len = 0;
     result->http_status = 0;
+    result->tool_call_count = 0;
 
-    /* Build request JSON */
     static char request_buf[LLM_MAX_REQUEST_LEN];
-    int req_len = buildRequest(request_buf, sizeof(request_buf), messages, count);
+    int req_len = buildRequest(request_buf, sizeof(request_buf),
+                                messages, count, tools_json);
     if (req_len < 0) {
         snprintf(m_error, sizeof(m_error), "Request too large for buffer");
         return false;
@@ -341,7 +482,6 @@ bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
     if (g_debug) Serial.printf("[LLM] Connected (%lums). Sending %d bytes...\n",
                                millis() - t0, req_len);
 
-    /* Send HTTP request */
     m_client.printf("POST %s HTTP/1.1\r\n", OPENROUTER_PATH);
     m_client.printf("Host: %s\r\n", OPENROUTER_HOST);
     m_client.printf("Authorization: Bearer %s\r\n", m_api_key);
@@ -353,7 +493,6 @@ bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
 
     if (g_debug) Serial.printf("[LLM] Request sent. Waiting for response...\n");
 
-    /* Wait for response */
     unsigned long wait_start = millis();
     while (!m_client.available()) {
         if (millis() - wait_start > LLM_READ_TIMEOUT_MS) {
@@ -365,8 +504,7 @@ bool LlmClient::chat(const LlmMessage *messages, int count, LlmResult *result) {
         delay(50);
     }
 
-    /* Read and parse response */
-    static char response_buf[LLM_MAX_RESPONSE_LEN + 1024]; /* extra for JSON envelope */
+    static char response_buf[LLM_MAX_RESPONSE_LEN + 2048];
     int body_len = readResponse(response_buf, sizeof(response_buf));
 
     m_client.stop();

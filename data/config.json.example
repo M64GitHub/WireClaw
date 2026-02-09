@@ -1,0 +1,11 @@
+{
+  "wifi_ssid": "YOUR-WIFI-SSID",
+  "wifi_pass": "YOUR-WIFI-PASSWORD",
+  "api_key": "sk-or-v1-your-openrouter-api-key",
+  "model": "openai/gpt-4o-mini",
+  "device_name": "esp-claw-01",
+  "max_tokens": 2048,
+  "temperature": 0.7,
+  "nats_host": "192.168.1.100",
+  "nats_port": "4222"
+}
