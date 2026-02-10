@@ -43,27 +43,15 @@ WireClaw runs two loops on the ESP32:
 
 The AI creates the rules. The rules run without the AI.
 
-```
-  ┌─────────────────────────────────────────────────────┐
-  │                    loop()                           │
-  │                                                     │
-  │  ┌───────────────────────────────────────────────┐  │
-  │  │  rulesEvaluate()          ← every iteration   │  │
-  │  │                                               │  │
-  │  │  for each rule:                               │  │
-  │  │    read sensor ──→ check condition ──→ act    │  │
-  │  │                        │                      │  │
-  │  │              GPIO / LED / NATS / Telegram     │  │
-  │  └───────────────────────────────────────────────┘  │
-  │                                                     │
-  │  Telegram poll ──┐                                  │
-  │  Serial input ───┼──→ chatWithLLM() ──→ OpenRouter  │
-  │  NATS message ───┘         │                        │
-  │                       tool_calls                    │
-  │                            │                        │
-  │              rule_create, led_set, gpio_write, ...  │
-  └─────────────────────────────────────────────────────┘
-```
+**`loop()`** — runs continuously on the ESP32:
+
+1. **`rulesEvaluate()`** — every iteration, no network
+   - For each enabled rule: read sensor → check condition → fire action
+   - Actions: GPIO write, LED set, NATS publish, Telegram alert
+2. **AI chat** — triggered by incoming messages
+   - Input: Telegram poll / Serial / NATS
+   - → `chatWithLLM()` → OpenRouter → tool calls
+   - Tools: `rule_create`, `led_set`, `gpio_write`, `sensor_read`, ...
 
 The rule loop and the AI loop share the same `loop()` function but serve different purposes. The rule engine evaluates every cycle regardless of whether anyone is chatting. Multiple rules monitoring the same sensor see the exact same reading per cycle (cached internally), so they always trigger and clear together.
 
@@ -411,34 +399,15 @@ nats req wireclaw-01.cmd "rules"
 
 Edit `data/system_prompt.txt` to customize the AI's personality and instructions.
 
-## Project Structure
+### Runtime Data
 
-```
-WireClaw/
-  platformio.ini              # Build config (ESP32-C6, pioarduino)
-  data/
-    config.json               # Runtime config (gitignored)
-    config.json.example       # Config template
-    system_prompt.txt         # AI personality/instructions
-  include/
-    llm_client.h              # LLM client (OpenRouter HTTPS)
-    tools.h                   # Tool execution API
-    devices.h                 # Device registry API
-    rules.h                   # Rule engine API
-  src/
-    main.cpp                  # WiFi, serial, NATS, Telegram, agentic loop
-    llm_client.cpp            # HTTPS client for OpenRouter
-    tools.cpp                 # 17 tool definitions and handlers
-    devices.cpp               # Device registry + persistence
-    rules.cpp                 # Rule engine + persistence
-  lib/
-    nats/                     # NATS client library (nats-atoms)
-```
+Created automatically on flash, persisted across reboots:
 
-Runtime data (created automatically, stored on flash):
-- `/devices.json` - registered devices
-- `/rules.json` - automation rules
-- `/history.json` - conversation history
+| File | Contents |
+|------|----------|
+| `/devices.json` | Registered sensors and actuators |
+| `/rules.json` | Automation rules |
+| `/history.json` | Conversation history (6 turns) |
 
 ## Resource Usage
 
@@ -448,15 +417,6 @@ Flash: 36.2% (1.2MB of 3.3MB)
 ```
 
 Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (12KB), conversation history, TLS stack.
-
-## Roadmap
-
-- [x] Rule engine - persistent local automation without LLM
-- [x] Device registry - named sensors and actuators
-- [x] Telegram alerts - rules send push notifications directly from the ESP32
-- [ ] Display dashboard - live sensor readings and rule status on SPI screen
-- [ ] Data logging - circular buffer of readings, queryable via LLM
-- [ ] Cross-device rules - NATS subscribe as rule trigger
 
 ## License
 
