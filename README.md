@@ -2,7 +2,7 @@
 
 An AI agent that lives on a $5 microcontroller and controls real hardware.
 
-Tell it what you want in plain language — over Telegram, serial, or NATS — and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI.
+Tell it what you want in plain language - over Telegram, serial, or NATS - and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI.
 
 ```
 You:  "When the chip temperature goes above 28, set the LED orange.
@@ -31,15 +31,15 @@ WireClaw: rule_create(sensor_name="chip_temp", condition="gt", threshold=40,
        → Rule created: rule_01 'heat alert' - chip_temp > 40 (every 5s) with auto-off
 ```
 
-The ESP32 monitors the sensor and sends you a Telegram message the moment the threshold is crossed — and another when it clears. No LLM in the loop.
+The ESP32 monitors the sensor and sends you a Telegram message the moment the threshold is crossed - and another when it clears. No LLM in the loop.
 
 ## How It Works
 
 WireClaw runs two loops on the ESP32:
 
-**The AI loop** handles conversation. When you send a message — via Telegram, serial, or NATS — it calls an LLM through OpenRouter, which responds with tool calls. The AI can read sensors, flip GPIOs, set LEDs, and create automation rules. Up to 5 tool-call iterations per message. This is the setup phase.
+**The AI loop** handles conversation. When you send a message - via Telegram, serial, or NATS - it calls an LLM through OpenRouter, which responds with tool calls. The AI can read sensors, flip GPIOs, set LEDs, and create automation rules. Up to 5 tool-call iterations per message. This is the setup phase.
 
-**The rule loop** runs every iteration of `loop()`, continuously, with no network and no LLM. Each cycle it walks through all enabled rules, reads their sensors, evaluates their conditions, and fires their actions — GPIO writes, LED changes, NATS publishes, Telegram alerts — directly from the microcontroller. Rules persist to flash and survive reboots. This is what runs 24/7.
+**The rule loop** runs every iteration of `loop()`, continuously, with no network and no LLM. Each cycle it walks through all enabled rules, reads their sensors, evaluates their conditions, and fires their actions - GPIO writes, LED changes, NATS publishes, Telegram alerts - directly from the microcontroller. Rules persist to flash and survive reboots. This is what runs 24/7.
 
 The AI creates the rules. The rules run without the AI.
 
@@ -104,7 +104,7 @@ Now check it:
 ---
 ```
 
-The rule is running. Warm up the chip (run some WiFi traffic) and watch the LED change. Reboot — the rule persists.
+The rule is running. Warm up the chip (run some WiFi traffic) and watch the LED change. Reboot - the rule persists.
 
 ### Example: Telegram Alerts
 
@@ -129,9 +129,9 @@ rule_create(
 )
 ```
 
-The ESP32 checks every 5 seconds. The moment it crosses 40, your phone buzzes. When it drops back down, you get the all-clear. No LLM calls, no cloud services — just a direct HTTPS request from the ESP32 to the Telegram API.
+The ESP32 checks every 5 seconds. The moment it crosses 40, your phone buzzes. When it drops back down, you get the all-clear. No LLM calls, no cloud services - just a direct HTTPS request from the ESP32 to the Telegram API.
 
-You can combine actions too: "Set the LED red AND send me a Telegram message when temperature exceeds 50" creates two rules — one for the LED, one for the alert.
+You can combine actions too: "Set the LED red AND send me a Telegram message when temperature exceeds 50" creates two rules - one for the LED, one for the alert.
 
 ### Example: Register an External Sensor + Actuator
 
@@ -172,14 +172,14 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 
 ## Features
 
-- **Rule Engine** — persistent local automation, edge-triggered, evaluated every loop iteration
-- **Telegram Alerts** — rules can send you push notifications directly, no LLM in the loop
-- **Device Registry** — named sensors and actuators instead of raw pin numbers, persisted to flash
-- **AI Agent** — agentic loop with 17 tools, up to 5 iterations per message
-- **Telegram Bot** — chat with your ESP32 from your phone
-- **NATS Integration** — device-to-device messaging, commands, and rule-triggered events
-- **Serial Interface** — local chat and commands over USB (115200 baud)
-- **Conversation History** — 6-turn circular buffer, persisted across reboots
+- **Rule Engine** - persistent local automation, edge-triggered, evaluated every loop iteration
+- **Telegram Alerts** - rules can send you push notifications directly, no LLM in the loop
+- **Device Registry** - named sensors and actuators instead of raw pin numbers, persisted to flash
+- **AI Agent** - agentic loop with 17 tools, up to 5 iterations per message
+- **Telegram Bot** - chat with your ESP32 from your phone
+- **NATS Integration** - device-to-device messaging, commands, and rule-triggered events
+- **Serial Interface** - local chat and commands over USB (115200 baud)
+- **Conversation History** - 6-turn circular buffer, persisted across reboots
 
 ## Hardware
 
@@ -187,7 +187,7 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 - **Platform:** [pioarduino](https://github.com/pioarduino/platform-espressif32) via PlatformIO
 - **Requirements:** WiFi network, [OpenRouter](https://openrouter.ai/) API key
 
-The dev board alone is enough to get started — chip temperature sensor and RGB LED work out of the box. Add external sensors and actuators as needed.
+The dev board alone is enough to get started - chip temperature sensor and RGB LED work out of the box. Add external sensors and actuators as needed.
 
 ## Quick Start
 
@@ -242,14 +242,14 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 
 | Type | Kind | Description |
 |------|------|-------------|
-| `digital_in` | Sensor | `digitalRead()` — 0 or 1 |
-| `analog_in` | Sensor | `analogRead()` — raw ADC value 0-4095 |
-| `ntc_10k` | Sensor | NTC thermistor — converts to Celsius (B=3950) |
-| `ldr` | Sensor | Light-dependent resistor — rough lux estimate |
+| `digital_in` | Sensor | `digitalRead()` - 0 or 1 |
+| `analog_in` | Sensor | `analogRead()` - raw ADC value 0-4095 |
+| `ntc_10k` | Sensor | NTC thermistor - converts to Celsius (B=3950) |
+| `ldr` | Sensor | Light-dependent resistor - rough lux estimate |
 | `internal_temp` | Sensor | ESP32 chip temperature (no pin, virtual) |
-| `digital_out` | Actuator | `digitalWrite()` — HIGH or LOW |
+| `digital_out` | Actuator | `digitalWrite()` - HIGH or LOW |
 | `relay` | Actuator | `digitalWrite()` with optional inverted logic |
-| `pwm` | Actuator | `analogWrite()` — 0-255 |
+| `pwm` | Actuator | `analogWrite()` - 0-255 |
 
 `chip_temp` is auto-registered on first boot. All other devices are registered through conversation with the AI.
 
@@ -257,7 +257,7 @@ Devices persist to `/devices.json` on flash.
 
 ## Rule Engine
 
-Rules monitor a sensor, evaluate a condition, and trigger an action — all in the main loop, no LLM involved.
+Rules monitor a sensor, evaluate a condition, and trigger an action - all in the main loop, no LLM involved.
 
 ### Conditions
 
@@ -274,8 +274,8 @@ Rules monitor a sensor, evaluate a condition, and trigger an action — all in t
 
 Rules need a sensor to monitor. Two options:
 
-- **Named sensor** (`sensor_name`) — a device from the registry (e.g. `chip_temp`, or any registered sensor). Preferred.
-- **Raw GPIO pin** (`sensor_pin`) — reads a GPIO directly. Set `sensor_analog=true` for `analogRead()` (0–4095), otherwise `digitalRead()` (0/1).
+- **Named sensor** (`sensor_name`) - a device from the registry (e.g. `chip_temp`, or any registered sensor). Preferred.
+- **Raw GPIO pin** (`sensor_pin`) - reads a GPIO directly. Set `sensor_analog=true` for `analogRead()` (0–4095), otherwise `digitalRead()` (0/1).
 
 Multiple rules monitoring the same named sensor see the exact same reading per evaluation cycle (cached internally).
 
@@ -285,7 +285,7 @@ Each rule has an **on action** (fires when condition becomes true) and an option
 
 | Action | Parameters | Description |
 |--------|-----------|-------------|
-| `actuator` | `actuator_name` | Set a registered actuator on/off by device name. Simplest option — just provide the actuator name and the rule handles on=1/off=0 automatically. |
+| `actuator` | `actuator_name` | Set a registered actuator on/off by device name. Simplest option - just provide the actuator name and the rule handles on=1/off=0 automatically. |
 | `led_set` | `on_r`, `on_g`, `on_b` (0–255) | Set the onboard RGB LED color. |
 | `gpio_write` | `on_pin`, `on_value` (0 or 1) | Write a raw GPIO pin HIGH/LOW. |
 | `nats_publish` | `on_nats_subject`, `on_nats_payload` | Publish a message to a NATS subject. |
@@ -314,14 +314,14 @@ You just describe what you want in natural language. The AI picks the right para
 
 ### Behavior
 
-- **Edge-triggered** — fires once on threshold crossing, not repeatedly
-- **Auto-off** — when using `actuator_name` or `off_action`, the reverse action runs when the condition clears
-- **Interval** — configurable per rule (default 5 seconds)
-- **Telegram cooldown** — per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
-- **Sensor caching** — all rules monitoring the same sensor see the same value per evaluation cycle
-- **NATS events** — every rule trigger publishes to `{device_name}.events`
-- **Persistence** — rules survive reboots (`/rules.json`)
-- **IDs** — auto-assigned: `rule_01`, `rule_02`, etc.
+- **Edge-triggered** - fires once on threshold crossing, not repeatedly
+- **Auto-off** - when using `actuator_name` or `off_action`, the reverse action runs when the condition clears
+- **Interval** - configurable per rule (default 5 seconds)
+- **Telegram cooldown** - per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
+- **Sensor caching** - all rules monitoring the same sensor see the same value per evaluation cycle
+- **NATS events** - every rule trigger publishes to `{device_name}.events`
+- **Persistence** - rules survive reboots (`/rules.json`)
+- **IDs** - auto-assigned: `rule_01`, `rule_02`, etc.
 
 ## LLM Tools
 
@@ -373,7 +373,7 @@ When `nats_host` is configured, the device subscribes to:
 
 | Subject | Description |
 |---------|-------------|
-| `{device_name}.chat` | Request/reply — send a message, get LLM response |
+| `{device_name}.chat` | Request/reply - send a message, get LLM response |
 | `{device_name}.cmd` | Commands: status, clear, heap, debug, devices, rules, reboot |
 | `{device_name}.events` | Published events: online, rule triggers, chat responses |
 
@@ -436,9 +436,9 @@ WireClaw/
 ```
 
 Runtime data (created automatically, stored on flash):
-- `/devices.json` — registered devices
-- `/rules.json` — automation rules
-- `/history.json` — conversation history
+- `/devices.json` - registered devices
+- `/rules.json` - automation rules
+- `/history.json` - conversation history
 
 ## Resource Usage
 
@@ -451,12 +451,12 @@ Static allocations: device registry (768B), rule engine (6.2KB), LLM request buf
 
 ## Roadmap
 
-- [x] Rule engine — persistent local automation without LLM
-- [x] Device registry — named sensors and actuators
-- [x] Telegram alerts — rules send push notifications directly from the ESP32
-- [ ] Display dashboard — live sensor readings and rule status on SPI screen
-- [ ] Data logging — circular buffer of readings, queryable via LLM
-- [ ] Cross-device rules — NATS subscribe as rule trigger
+- [x] Rule engine - persistent local automation without LLM
+- [x] Device registry - named sensors and actuators
+- [x] Telegram alerts - rules send push notifications directly from the ESP32
+- [ ] Display dashboard - live sensor readings and rule status on SPI screen
+- [ ] Data logging - circular buffer of readings, queryable via LLM
+- [ ] Cross-device rules - NATS subscribe as rule trigger
 
 ## License
 
