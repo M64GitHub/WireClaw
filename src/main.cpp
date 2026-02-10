@@ -16,6 +16,8 @@
 #include "driver/temperature_sensor.h"
 #include "llm_client.h"
 #include "tools.h"
+#include "devices.h"
+#include "rules.h"
 #include <nats_atoms.h>
 
 /*============================================================================
@@ -37,6 +39,7 @@ static int  cfg_nats_port = 4222;
 static char cfg_telegram_token[64];
 static char cfg_telegram_chat_id[16];
 static char cfg_system_prompt[4096];
+int cfg_telegram_cooldown = 60;  /* seconds, 0 = disabled */
 
 /* Placeholder defaults — overridden by LittleFS config.json */
 static void configDefaults() {
@@ -154,6 +157,10 @@ static bool loadConfig() {
         }
         jsonGetString(json_buf, "telegram_token", cfg_telegram_token, sizeof(cfg_telegram_token));
         jsonGetString(json_buf, "telegram_chat_id", cfg_telegram_chat_id, sizeof(cfg_telegram_chat_id));
+        char cd_buf[8];
+        if (jsonGetString(json_buf, "telegram_cooldown", cd_buf, sizeof(cd_buf))) {
+            cfg_telegram_cooldown = atoi(cd_buf);
+        }
     } else {
         Serial.printf("LittleFS: no config.json, using defaults\n");
     }
@@ -189,7 +196,7 @@ static unsigned long natsLastReconnect = 0;
 #define NATS_RECONNECT_DELAY_MS 5000
 static char natsSubjectChat[64];
 static char natsSubjectCmd[64];
-static char natsSubjectEvents[64];
+char natsSubjectEvents[64];
 
 /* Conversation history */
 struct Turn {
@@ -585,6 +592,36 @@ static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
         g_debug = !g_debug;
         snprintf(responseBuf, sizeof(responseBuf), "Debug %s",
                  g_debug ? "ON" : "OFF");
+    } else if (strcmp(cmdBuf, "devices") == 0) {
+        int w = 0;
+        const Device *devs = deviceGetAll();
+        for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(responseBuf) - 60; i++) {
+            if (!devs[i].used) continue;
+            const Device *d = &devs[i];
+            if (w > 0) w += snprintf(responseBuf + w, sizeof(responseBuf) - w, "; ");
+            if (deviceIsSensor(d->kind)) {
+                float val = deviceReadSensor(d);
+                w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
+                             "%s=%.1f%s", d->name, val, d->unit);
+            } else {
+                w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
+                             "%s(%s)", d->name, deviceKindName(d->kind));
+            }
+        }
+        if (w == 0) snprintf(responseBuf, sizeof(responseBuf), "No devices");
+    } else if (strcmp(cmdBuf, "rules") == 0) {
+        int w = 0;
+        const Rule *rules = ruleGetAll();
+        for (int i = 0; i < MAX_RULES && w < (int)sizeof(responseBuf) - 60; i++) {
+            if (!rules[i].used) continue;
+            const Rule *r = &rules[i];
+            if (w > 0) w += snprintf(responseBuf + w, sizeof(responseBuf) - w, "; ");
+            w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
+                         "%s '%s' %s val=%d %s",
+                         r->id, r->name, r->enabled ? "ON" : "OFF",
+                         (int)r->last_reading, r->fired ? "FIRED" : "idle");
+        }
+        if (w == 0) snprintf(responseBuf, sizeof(responseBuf), "No rules");
     } else if (strcmp(cmdBuf, "reboot") == 0) {
         if (g_nats_connected) {
             natsClient.publish(natsSubjectEvents, "Rebooting...");
@@ -594,7 +631,7 @@ static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
         return;
     } else {
         snprintf(responseBuf, sizeof(responseBuf),
-                 "Unknown command: %s (try: status, clear, heap, debug, reboot)",
+                 "Unknown command: %s (try: status, clear, heap, debug, devices, rules, reboot)",
                  cmdBuf);
     }
 
@@ -664,7 +701,7 @@ static bool connectNats() {
  *============================================================================*/
 
 static WiFiClientSecure tgClient;
-static bool g_telegram_enabled = false;
+bool g_telegram_enabled = false;
 static int  tgLastUpdateId = 0;
 static unsigned long tgLastPoll = 0;
 static unsigned long tgLastActivity = 0; /* 0 = no recent activity, but see init in setup */
@@ -763,7 +800,7 @@ static int tgApiCall(const char *method, const char *body, int body_len,
 /**
  * Send a message to the allowed chat.
  */
-static bool tgSendMessage(const char *text) {
+bool tgSendMessage(const char *text) {
     static char req[LLM_MAX_RESPONSE_LEN + 256];
     static char escaped[LLM_MAX_RESPONSE_LEN + 128];
 
@@ -996,6 +1033,77 @@ void handleSerialCommand(const char *input) {
         return;
     }
 
+    if (strcmp(input, "/devices") == 0) {
+        const Device *devs = deviceGetAll();
+        int count = 0;
+        Serial.printf("--- devices ---\n");
+        for (int i = 0; i < MAX_DEVICES; i++) {
+            if (!devs[i].used) continue;
+            const Device *d = &devs[i];
+            if (deviceIsSensor(d->kind)) {
+                float val = deviceReadSensor(d);
+                Serial.printf("  %s [%s] pin=%d  = %.1f %s\n",
+                              d->name, deviceKindName(d->kind), d->pin, val, d->unit);
+            } else {
+                Serial.printf("  %s [%s] pin=%d%s\n",
+                              d->name, deviceKindName(d->kind), d->pin,
+                              d->inverted ? " (inverted)" : "");
+            }
+            count++;
+        }
+        if (count == 0) Serial.printf("  (none)\n");
+        Serial.printf("---\n> ");
+        return;
+    }
+
+    if (strcmp(input, "/rules") == 0) {
+        const Rule *rules = ruleGetAll();
+        int count = 0;
+        Serial.printf("--- rules ---\n");
+        for (int i = 0; i < MAX_RULES; i++) {
+            if (!rules[i].used) continue;
+            const Rule *r = &rules[i];
+            Serial.printf("  %s '%s' [%s] %s %s %d val=%d %s\n",
+                          r->id, r->name,
+                          r->enabled ? "ON" : "OFF",
+                          r->sensor_name[0] ? r->sensor_name : "gpio",
+                          conditionOpName(r->condition),
+                          (int)r->threshold,
+                          (int)r->last_reading,
+                          r->fired ? "FIRED" : "idle");
+            Serial.printf("    on:  %s", actionTypeName(r->on_action));
+            if (r->on_action == ACT_LED_SET) {
+                int32_t v = r->on_value;
+                Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
+            } else if (r->on_action == ACT_TELEGRAM || r->on_action == ACT_NATS_PUBLISH) {
+                Serial.printf(" \"%s\"", r->on_nats_pay);
+            } else if (r->on_action == ACT_ACTUATOR) {
+                Serial.printf(" %s", r->on_actuator);
+            } else if (r->on_action == ACT_GPIO_WRITE) {
+                Serial.printf(" pin=%d val=%d", r->on_pin, (int)r->on_value);
+            }
+            Serial.printf("\n");
+            if (r->has_off_action) {
+                Serial.printf("    off: %s", actionTypeName(r->off_action));
+                if (r->off_action == ACT_LED_SET) {
+                    int32_t v = r->off_value;
+                    Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
+                } else if (r->off_action == ACT_TELEGRAM || r->off_action == ACT_NATS_PUBLISH) {
+                    Serial.printf(" \"%s\"", r->off_nats_pay);
+                } else if (r->off_action == ACT_ACTUATOR) {
+                    Serial.printf(" %s", r->off_actuator);
+                } else if (r->off_action == ACT_GPIO_WRITE) {
+                    Serial.printf(" pin=%d val=%d", r->off_pin, (int)r->off_value);
+                }
+                Serial.printf("\n");
+            }
+            count++;
+        }
+        if (count == 0) Serial.printf("  (none)\n");
+        Serial.printf("---\n> ");
+        return;
+    }
+
     if (strcmp(input, "/help") == 0) {
         Serial.printf("--- esp-claw commands ---\n");
         Serial.printf("  /status  - Show device status\n");
@@ -1003,6 +1111,8 @@ void handleSerialCommand(const char *input) {
         Serial.printf("  /prompt  - Show system prompt\n");
         Serial.printf("  /history - Show conversation history (add 'full' for complete text)\n");
         Serial.printf("  /clear   - Clear conversation history\n");
+        Serial.printf("  /devices - List registered devices with readings\n");
+        Serial.printf("  /rules   - List automation rules with status\n");
         Serial.printf("  /heap    - Show free memory\n");
         Serial.printf("  /debug   - Toggle debug output\n");
         Serial.printf("  /reboot  - Restart ESP32\n");
@@ -1042,6 +1152,10 @@ void setup() {
         temperature_sensor_get_celsius(g_temp_sensor, &temp);
         Serial.printf("Chip temp: %.1f C\n", temp);
     }
+
+    /* Initialize device registry and rule engine */
+    devicesInit();
+    rulesInit();
 
     if (cfg_wifi_ssid[0] == '\0' || cfg_api_key[0] == '\0') {
         Serial.printf("\n[ERROR] Missing config! Upload filesystem:\n");
@@ -1145,6 +1259,9 @@ void loop() {
     if (g_telegram_enabled) {
         telegramCheck();
     }
+
+    /* Evaluate automation rules */
+    rulesEvaluate();
 
     /* Read serial input character by character */
     while (Serial.available()) {

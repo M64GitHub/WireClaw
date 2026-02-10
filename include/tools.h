@@ -11,7 +11,7 @@
 #include <Arduino.h>
 
 /* Max length of a tool result string */
-#define TOOL_RESULT_MAX_LEN 256
+#define TOOL_RESULT_MAX_LEN 512
 
 /**
  * Get the JSON array of tool definitions for the LLM API.
