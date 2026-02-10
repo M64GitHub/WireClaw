@@ -1,4 +1,4 @@
-# [WireClaw](https://wireclaw.io)
+# WireClaw
 
 An AI agent that lives on a $5 microcontroller and controls real hardware.
 
@@ -432,3 +432,7 @@ Static allocations: device registry (768B), rule engine (6.2KB), LLM request buf
 ## License
 
 MIT
+
+---
+
+[wireclaw.io](https://wireclaw.io)
