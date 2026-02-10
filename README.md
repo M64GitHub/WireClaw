@@ -8,7 +8,11 @@ Tell it what you want in plain language - over Telegram, serial, or NATS - and i
 You:  "When the chip temperature goes above 28, set the LED orange.
        When it drops back down, set it cyan."
 
-WireClaw: rule_create(sensor_name="chip_temp", condition="gt", threshold=28,
+WireClaw: "I've created a rule to set the LED to orange when the temperature exceeds 28  
+           degrees and to cyan when it goes below. If you need any further adjustments  
+           or assistance, feel free to ask!"
+
+Serial Debug: rule_create(sensor_name="chip_temp", condition="gt", threshold=28,
                        on_action="led_set", on_r=255, on_g=80, on_b=0,
                        off_action="led_set", off_r=0, off_g=255, off_b=255)
 
@@ -22,7 +26,11 @@ It can also text you:
 ```
 You:  "Send me a Telegram message when chip temperature goes above 40."
 
-WireClaw: rule_create(sensor_name="chip_temp", condition="gt", threshold=40,
+WireClaw: "I've created a new rule to send a Telegram message when the temperature exceeds 40°C. 
+           You will receive a warning message, and another notification when the temperature 
+           returns to normal. Let me know if you need anything else!"
+
+Serial Debug: rule_create(sensor_name="chip_temp", condition="gt", threshold=40,
                        on_action="telegram",
                        on_telegram_message="Chip is overheating!",
                        off_action="telegram",
