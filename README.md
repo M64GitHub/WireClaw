@@ -12,7 +12,7 @@ WireClaw: rule_create(sensor_name="chip_temp", condition="gt", threshold=28,
                        on_action="led_set", on_r=255, on_g=80, on_b=0,
                        off_action="led_set", off_r=0, off_g=255, off_b=255)
 
-       → Rule created: rule_01 'heat warning' - chip_temp > 28 (every 5s) with auto-off
+       -> Rule created: rule_01 'heat warning' - chip_temp > 28 (every 5s) with auto-off
 ```
 
 The rule now runs in the main loop. No cloud, no server, no LLM calls. Just the ESP32 checking the sensor every 5 seconds and flipping the LED.
@@ -28,7 +28,7 @@ WireClaw: rule_create(sensor_name="chip_temp", condition="gt", threshold=40,
                        off_action="telegram",
                        off_telegram_message="Chip temperature back to normal.")
 
-       → Rule created: rule_01 'heat alert' - chip_temp > 40 (every 5s) with auto-off
+       -> Rule created: rule_01 'heat alert' - chip_temp > 40 (every 5s) with auto-off
 ```
 
 The ESP32 monitors the sensor and sends you a Telegram message the moment the threshold is crossed - and another when it clears. No LLM in the loop.
@@ -43,14 +43,14 @@ WireClaw runs two loops on the ESP32:
 
 The AI creates the rules. The rules run without the AI.
 
-**`loop()`** — runs continuously on the ESP32:
+**`loop()`** - runs continuously on the ESP32:
 
-1. **`rulesEvaluate()`** — every iteration, no network
-   - For each enabled rule: read sensor → check condition → fire action
+1. **`rulesEvaluate()`** - every iteration, no network
+   - For each enabled rule: read sensor -> check condition -> fire action
    - Actions: GPIO write, LED set, NATS publish, Telegram alert
-2. **AI chat** — triggered by incoming messages
+2. **AI chat** - triggered by incoming messages
    - Input: Telegram poll / Serial / NATS
-   - → `chatWithLLM()` → OpenRouter → tool calls
+   - -> `chatWithLLM()` -> OpenRouter -> tool calls
    - Tools: `rule_create`, `led_set`, `gpio_write`, `sensor_read`, ...
 
 The rule loop and the AI loop share the same `loop()` function but serve different purposes. The rule engine evaluates every cycle regardless of whether anyone is chatting. Multiple rules monitoring the same sensor see the exact same reading per cycle (cached internally), so they always trigger and clear together.
@@ -77,9 +77,9 @@ rule_create(
     condition     = "gt",
     threshold     = 28,
     on_action     = "led_set",
-    on_r = 255, on_g = 80, on_b = 0,     ← orange when hot
+    on_r = 255, on_g = 80, on_b = 0,     <- orange when hot
     off_action    = "led_set",
-    off_r = 0, off_g = 255, off_b = 255   ← cyan when cool
+    off_r = 0, off_g = 255, off_b = 255   <- cyan when cool
 )
 ```
 
@@ -128,16 +128,16 @@ If you wire up an NTC thermistor on pin 4 and a relay on pin 16:
 ```
 You:  "Register an NTC thermistor on pin 4 called 'temperature', unit is C"
 AI:   device_register(name="temperature", type="ntc_10k", pin=4, unit="C")
-      → Registered sensor 'temperature' on pin 4
+      -> Registered sensor 'temperature' on pin 4
 
 You:  "Register a relay on pin 16 called 'fan', it uses inverted logic"
 AI:   device_register(name="fan", type="relay", pin=16, inverted=true)
-      → Registered actuator 'fan' on pin 16
+      -> Registered actuator 'fan' on pin 16
 
 You:  "Turn on the fan when temperature exceeds 28"
 AI:   rule_create(rule_name="cool down", sensor_name="temperature",
                   condition="gt", threshold=28, actuator_name="fan")
-      → Rule created: rule_01 'cool down' - temperature > 28 (every 5s) with auto-off
+      -> Rule created: rule_01 'cool down' - temperature > 28 (every 5s) with auto-off
 ```
 
 Devices and rules persist to flash. After a reboot:
@@ -263,7 +263,7 @@ Rules monitor a sensor, evaluate a condition, and trigger an action - all in the
 Rules need a sensor to monitor. Two options:
 
 - **Named sensor** (`sensor_name`) - a device from the registry (e.g. `chip_temp`, or any registered sensor). Preferred.
-- **Raw GPIO pin** (`sensor_pin`) - reads a GPIO directly. Set `sensor_analog=true` for `analogRead()` (0–4095), otherwise `digitalRead()` (0/1).
+- **Raw GPIO pin** (`sensor_pin`) - reads a GPIO directly. Set `sensor_analog=true` for `analogRead()` (0-4095), otherwise `digitalRead()` (0/1).
 
 Multiple rules monitoring the same named sensor see the exact same reading per evaluation cycle (cached internally).
 
@@ -274,7 +274,7 @@ Each rule has an **on action** (fires when condition becomes true) and an option
 | Action | Parameters | Description |
 |--------|-----------|-------------|
 | `actuator` | `actuator_name` | Set a registered actuator on/off by device name. Simplest option - just provide the actuator name and the rule handles on=1/off=0 automatically. |
-| `led_set` | `on_r`, `on_g`, `on_b` (0–255) | Set the onboard RGB LED color. |
+| `led_set` | `on_r`, `on_g`, `on_b` (0-255) | Set the onboard RGB LED color. |
 | `gpio_write` | `on_pin`, `on_value` (0 or 1) | Write a raw GPIO pin HIGH/LOW. |
 | `nats_publish` | `on_nats_subject`, `on_nats_payload` | Publish a message to a NATS subject. |
 | `telegram` | `on_telegram_message` | Send a Telegram message. Subject to `telegram_cooldown` (default 60s per rule). |
@@ -285,18 +285,18 @@ You just describe what you want in natural language. The AI picks the right para
 
 ```
 "Set GPIO 4 high when chip_temp exceeds 30, low when it drops back."
-→ on_action=gpio_write, on_pin=4, on_value=1
+-> on_action=gpio_write, on_pin=4, on_value=1
   off_action=gpio_write, off_pin=4, off_value=0
 
 "Turn on the fan when temperature exceeds 28."
-→ actuator_name=fan (auto on/off)
+-> actuator_name=fan (auto on/off)
 
 "Set LED red above 35, green below."
-→ on_action=led_set, on_r=255, on_g=0, on_b=0
+-> on_action=led_set, on_r=255, on_g=0, on_b=0
   off_action=led_set, off_r=0, off_g=255, off_b=0
 
 "Alert me on Telegram when chip_temp goes above 40."
-→ on_action=telegram, on_telegram_message="Chip over 40!"
+-> on_action=telegram, on_telegram_message="Chip over 40!"
   off_action=telegram, off_telegram_message="Back to normal."
 ```
 

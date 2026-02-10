@@ -1,6 +1,6 @@
 /**
  * @file devices.cpp
- * @brief Device registry — named sensors and actuators with persistence
+ * @brief Device registry - named sensors and actuators with persistence
  */
 
 #include "devices.h"
@@ -183,7 +183,7 @@ bool deviceSetActuator(const Device *dev, int value) {
 }
 
 /*============================================================================
- * JSON Persistence — /devices.json
+ * JSON Persistence - /devices.json
  *============================================================================*/
 
 /* Simple JSON string extractor (matches pattern from main.cpp) */

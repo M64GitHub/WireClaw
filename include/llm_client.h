@@ -12,7 +12,7 @@
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 
-/* Global debug flag — toggled via /debug serial command */
+/* Global debug flag - toggled via /debug serial command */
 extern bool g_debug;
 
 /* Maximum sizes */
@@ -34,7 +34,7 @@ struct LlmToolCall {
 #define LLM_MSG_TOOL_CALL   1  /* Assistant message with tool calls (content may be empty) */
 #define LLM_MSG_TOOL_RESULT 2  /* Tool result: role=tool, has tool_call_id */
 
-/* A single chat message — supports regular, tool-call, and tool-result types */
+/* A single chat message - supports regular, tool-call, and tool-result types */
 struct LlmMessage {
     int         type;           /* LLM_MSG_NORMAL, LLM_MSG_TOOL_CALL, LLM_MSG_TOOL_RESULT */
     const char *role;           /* "system", "user", "assistant", "tool" */

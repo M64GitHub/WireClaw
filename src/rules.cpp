@@ -1,6 +1,6 @@
 /**
  * @file rules.cpp
- * @brief Local rule engine — persistent sensor->actuator automation
+ * @brief Local rule engine - persistent sensor->actuator automation
  */
 
 #include "rules.h"
@@ -19,7 +19,7 @@ extern bool g_telegram_enabled;
 extern int cfg_telegram_cooldown;
 extern bool tgSendMessage(const char *text);
 
-/* NATS events subject — built from device name in main.cpp */
+/* NATS events subject - built from device name in main.cpp */
 extern char natsSubjectEvents[];
 
 static Rule g_rules[MAX_RULES];
@@ -263,7 +263,7 @@ static void publishRuleEvent(const Rule *r, bool is_on) {
 void rulesEvaluate() {
     uint32_t now = millis();
 
-    /* Sensor read cache — each unique sensor read once per cycle */
+    /* Sensor read cache - each unique sensor read once per cycle */
     struct SensorCache { char name[DEV_NAME_LEN]; float value; };
     SensorCache cache[MAX_RULES];
     int cacheCount = 0;
@@ -300,11 +300,11 @@ void rulesEvaluate() {
                         cacheCount++;
                     }
                 } else {
-                    continue; /* Device not found — skip */
+                    continue; /* Device not found - skip */
                 }
             }
         } else {
-            /* Raw GPIO — no caching */
+            /* Raw GPIO - no caching */
             if (r->sensor_analog) {
                 reading = (float)analogRead(r->sensor_pin);
             } else {
@@ -347,7 +347,7 @@ void rulesEvaluate() {
 }
 
 /*============================================================================
- * JSON Persistence — /rules.json
+ * JSON Persistence - /rules.json
  *============================================================================*/
 
 /* Simple JSON helpers (same pattern as devices.cpp) */
@@ -457,7 +457,7 @@ static void rulesLoad() {
         const char *obj = strchr(p, '{');
         if (!obj) break;
 
-        /* Find matching '}' — simple scan (no nested objects) */
+        /* Find matching '}' - simple scan (no nested objects) */
         const char *obj_end = strchr(obj, '}');
         if (!obj_end) break;
 

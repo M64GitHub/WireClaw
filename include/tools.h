@@ -15,7 +15,7 @@
 
 /**
  * Get the JSON array of tool definitions for the LLM API.
- * Returns a static string — do not free.
+ * Returns a static string - do not free.
  */
 const char *toolsGetDefinitions();
 

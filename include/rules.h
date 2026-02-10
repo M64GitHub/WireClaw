@@ -63,7 +63,7 @@ struct Rule {
     bool used;
 };
 
-/* Initialize rule engine — loads from /rules.json */
+/* Initialize rule engine - loads from /rules.json */
 void rulesInit();
 
 /* Persist rules to /rules.json */

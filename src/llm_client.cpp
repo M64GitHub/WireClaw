@@ -1,6 +1,6 @@
 /**
  * @file llm_client.cpp
- * @brief OpenRouter LLM client for ESP32 — with tool calling support
+ * @brief OpenRouter LLM client for ESP32 - with tool calling support
  */
 
 #include "llm_client.h"
@@ -152,7 +152,7 @@ static const char *json_skip_value(const char *p, const char *end) {
         return (depth == 0) ? p : nullptr;
     }
 
-    /* Number, bool, null — skip to next delimiter */
+    /* Number, bool, null - skip to next delimiter */
     while (p < end && *p != ',' && *p != '}' && *p != ']' && *p != '\n')
         p++;
     return p;
@@ -315,7 +315,7 @@ int LlmClient::parseToolCalls(const char *body, int body_len, LlmResult *result)
             tc->id[0] = '\0';
         }
 
-        /* Extract function name — find "function" object first */
+        /* Extract function name - find "function" object first */
         int name_len = 0;
         const char *name = json_find_string(obj_start, obj_len, "name", &name_len);
         if (name && name_len > 0) {
@@ -326,7 +326,7 @@ int LlmClient::parseToolCalls(const char *body, int body_len, LlmResult *result)
             tc->name[0] = '\0';
         }
 
-        /* Extract arguments — it's a JSON string value containing JSON */
+        /* Extract arguments - it's a JSON string value containing JSON */
         int args_len = 0;
         const char *args = json_find_string(obj_start, obj_len, "arguments", &args_len);
         if (args && args_len > 0) {
@@ -377,7 +377,7 @@ bool LlmClient::parseResponse(const char *body, int body_len, LlmResult *result)
         return true;
     }
 
-    /* No tool calls — need content */
+    /* No tool calls - need content */
     if (result->content_len <= 0) {
         int elen = 0;
         const char *errmsg = json_find_string(body, body_len, "message", &elen);

@@ -3,7 +3,7 @@
  * @brief esp-claw - ESP32 AI Agent
  *
  * A reimplementation of PicoClaw's core agent loop for ESP32.
- * Phase 5: Polish — history persistence, LED heartbeat, watchdog.
+ * Phase 5: Polish - history persistence, LED heartbeat, watchdog.
  *
  * Type a message in the serial monitor, get an LLM response.
  * Use 115200 baud, send with newline.
@@ -28,7 +28,7 @@
 #define SERIAL_BUF_SIZE  512
 #define MAX_HISTORY      6  /* Keep last N user+assistant turns (pairs) */
 
-/* Runtime config — loaded from LittleFS, falls back to secrets.h */
+/* Runtime config - loaded from LittleFS, falls back to secrets.h */
 static char cfg_wifi_ssid[64];
 static char cfg_wifi_pass[64];
 static char cfg_api_key[128];
@@ -41,7 +41,7 @@ static char cfg_telegram_chat_id[16];
 static char cfg_system_prompt[4096];
 int cfg_telegram_cooldown = 60;  /* seconds, 0 = disabled */
 
-/* Placeholder defaults — overridden by LittleFS config.json */
+/* Placeholder defaults - overridden by LittleFS config.json */
 static void configDefaults() {
     cfg_wifi_ssid[0] = '\0';
     cfg_wifi_pass[0] = '\0';
@@ -86,7 +86,7 @@ void ledPurple() { led(128, 0, 255); }
  *============================================================================*/
 
 /**
- * Simple JSON string extractor — find "key":"value" and copy value to dst.
+ * Simple JSON string extractor - find "key":"value" and copy value to dst.
  * Returns true if found.
  */
 static bool jsonGetString(const char *json, const char *key,
@@ -181,14 +181,14 @@ static bool loadConfig() {
  *============================================================================*/
 
 bool g_debug = false;
-bool g_led_user = false; /* true when LED was set by a tool — don't overwrite with status */
+bool g_led_user = false; /* true when LED was set by a tool - don't overwrite with status */
 temperature_sensor_handle_t g_temp_sensor = NULL;
 
 LlmClient llm;
 char serialBuf[SERIAL_BUF_SIZE];
 int  serialPos = 0;
 
-/* NATS client (optional — only used if nats_host is configured) */
+/* NATS client (optional - only used if nats_host is configured) */
 NatsClient natsClient;
 bool g_nats_enabled = false;
 bool g_nats_connected = false;
@@ -356,7 +356,7 @@ bool connectWiFi() {
 }
 
 /*============================================================================
- * Chat with LLM — Agentic Loop with Tool Calling
+ * Chat with LLM - Agentic Loop with Tool Calling
  *============================================================================*/
 
 #define MAX_AGENT_ITERATIONS 5
@@ -370,7 +370,7 @@ static char toolCallJsonBuf[1024]; /* copy of tool_calls_json for message buildi
  * (valid until next call), or nullptr on error.
  */
 const char *chatWithLLM(const char *userMessage) {
-    g_led_user = false; /* Reset — status LEDs allowed until a tool sets the LED */
+    g_led_user = false; /* Reset - status LEDs allowed until a tool sets the LED */
     ledBlue(); /* Thinking... */
 
     /*
@@ -410,7 +410,7 @@ const char *chatWithLLM(const char *userMessage) {
         totalPromptTokens += result.prompt_tokens;
         totalCompletionTokens += result.completion_tokens;
 
-        /* No tool calls — we're done */
+        /* No tool calls - we're done */
         if (result.tool_call_count == 0) {
             finalContent = result.content;
             break;
@@ -516,7 +516,7 @@ static void onNatsEvent(nats_client_t *client, nats_event_t event,
 }
 
 /**
- * NATS chat handler — request/reply. Caller sends a message,
+ * NATS chat handler - request/reply. Caller sends a message,
  * we run the agentic loop and respond with the LLM answer.
  */
 static void onNatsChat(nats_client_t *client, const nats_msg_t *msg,
@@ -553,7 +553,7 @@ static void onNatsChat(nats_client_t *client, const nats_msg_t *msg,
 }
 
 /**
- * NATS command handler — same commands as serial.
+ * NATS command handler - same commands as serial.
  */
 static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
                       void *userdata) {
@@ -767,7 +767,7 @@ static int tgApiCall(const char *method, const char *body, int body_len,
         }
     }
 
-    /* Read body — use Content-Length to avoid SSL error on server close */
+    /* Read body - use Content-Length to avoid SSL error on server close */
     int total = 0;
     if (content_length > 0) {
         int to_read = content_length < buf_len - 1 ? content_length : buf_len - 1;
@@ -852,7 +852,7 @@ static void tgPoll() {
 
     /* Quick check: is there a result with "update_id"? */
     const char *uid_str = strstr(resp, "\"update_id\"");
-    if (!uid_str) return; /* No updates — normal */
+    if (!uid_str) return; /* No updates - normal */
 
     /* Parse update_id */
     const char *p = uid_str + 11;
@@ -886,7 +886,7 @@ static void tgPoll() {
         return;
     }
 
-    /* Extract message text — find "text":"..." */
+    /* Extract message text - find "text":"..." */
     const char *text_key = strstr(resp, "\"text\"");
     if (!text_key) { if (g_debug) Serial.printf("[TG] no text field\n"); return; }
     p = text_key + 6;
@@ -927,7 +927,7 @@ static void tgPoll() {
 }
 
 /**
- * Called from loop() — polls Telegram at adaptive intervals.
+ * Called from loop() - polls Telegram at adaptive intervals.
  */
 static void telegramCheck() {
     unsigned long now = millis();
@@ -1175,7 +1175,7 @@ void setup() {
     /* Init LLM client */
     llm.begin(cfg_api_key, cfg_model);
 
-    /* Watchdog — reconfigure to 60s (Arduino already inits WDT at 5s) */
+    /* Watchdog - reconfigure to 60s (Arduino already inits WDT at 5s) */
     esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 60000, .idle_core_mask = 0,
                                        .trigger_panic = true };
     esp_task_wdt_reconfigure(&wdt_cfg);
@@ -1196,7 +1196,7 @@ void setup() {
     if (cfg_telegram_token[0] != '\0' && cfg_telegram_chat_id[0] != '\0') {
         g_telegram_enabled = true;
         tgClient.setInsecure();
-        tgClient.setTimeout(30); /* seconds — matches LLM client pattern */
+        tgClient.setTimeout(30); /* seconds - matches LLM client pattern */
         tgLastPoll = millis();   /* delay first poll by one interval */
         Serial.printf("Telegram: enabled (chat_id %s)\n", cfg_telegram_chat_id);
     } else {
@@ -1215,7 +1215,7 @@ static unsigned long lastHeartbeat = 0;
 void loop() {
     esp_task_wdt_reset(); /* Feed the watchdog */
 
-    /* LED heartbeat — brief dim green blink when idle */
+    /* LED heartbeat - brief dim green blink when idle */
     if (!g_led_user) {
         unsigned long now = millis();
         if (now - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {

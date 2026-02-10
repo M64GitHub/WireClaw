@@ -38,7 +38,7 @@ struct Device {
     bool        used;
 };
 
-/* Initialize device registry — loads from /devices.json, auto-registers chip_temp */
+/* Initialize device registry - loads from /devices.json, auto-registers chip_temp */
 void devicesInit();
 
 /* Persist device registry to /devices.json */
