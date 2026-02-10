@@ -35,30 +35,37 @@ The ESP32 monitors the sensor and sends you a Telegram message the moment the th
 
 ## How It Works
 
-WireClaw has two halves:
+WireClaw runs two loops on the ESP32:
 
-**1. AI Agent** — An agentic loop that takes natural language from any input channel, calls an LLM (via OpenRouter), and executes tool calls against the hardware. Up to 5 tool-call iterations per message.
+**The AI loop** handles conversation. When you send a message — via Telegram, serial, or NATS — it calls an LLM through OpenRouter, which responds with tool calls. The AI can read sensors, flip GPIOs, set LEDs, and create automation rules. Up to 5 tool-call iterations per message. This is the setup phase.
 
-**2. Local Rule Engine** — Persistent automation rules created by the AI (or by you through the AI). Rules evaluate sensor conditions in the main loop and trigger actions immediately, with no network round-trip. They survive reboots.
+**The rule loop** runs every iteration of `loop()`, continuously, with no network and no LLM. Each cycle it walks through all enabled rules, reads their sensors, evaluates their conditions, and fires their actions — GPIO writes, LED changes, NATS publishes, Telegram alerts — directly from the microcontroller. Rules persist to flash and survive reboots. This is what runs 24/7.
 
 The AI creates the rules. The rules run without the AI.
 
 ```
-Telegram / Serial / NATS ──→ chatWithLLM() ──→ OpenRouter
-                                                    │
-                                              tool_calls
-                                                    │
-                              ┌──────────────────────┤
-                              ▼                      ▼
-                        rule_create()          led_set(), gpio_write(), ...
-                              │
-                              ▼
-                    ┌─────────────────────┐
-                    │  Rule Engine (loop)  │  ← runs every iteration, no LLM
-                    │  sensor → condition  │
-                    │  → action            │
-                    └─────────────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │                    loop()                           │
+  │                                                     │
+  │  ┌───────────────────────────────────────────────┐  │
+  │  │  rulesEvaluate()          ← every iteration   │  │
+  │  │                                               │  │
+  │  │  for each rule:                               │  │
+  │  │    read sensor ──→ check condition ──→ act    │  │
+  │  │                        │                      │  │
+  │  │              GPIO / LED / NATS / Telegram     │  │
+  │  └───────────────────────────────────────────────┘  │
+  │                                                     │
+  │  Telegram poll ──┐                                  │
+  │  Serial input ───┼──→ chatWithLLM() ──→ OpenRouter  │
+  │  NATS message ───┘         │                        │
+  │                       tool_calls                    │
+  │                            │                        │
+  │              rule_create, led_set, gpio_write, ...  │
+  └─────────────────────────────────────────────────────┘
 ```
+
+The rule loop and the AI loop share the same `loop()` function but serve different purposes. The rule engine evaluates every cycle regardless of whether anyone is chatting. Multiple rules monitoring the same sensor see the exact same reading per cycle (cached internally), so they always trigger and clear together.
 
 ## Try It With Just a Dev Board
 
@@ -208,7 +215,8 @@ Edit `data/config.json`:
   "nats_host": "",
   "nats_port": "4222",
   "telegram_token": "",
-  "telegram_chat_id": ""
+  "telegram_chat_id": "",
+  "telegram_cooldown": "60"
 }
 ```
 
