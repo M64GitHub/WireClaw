@@ -171,9 +171,12 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 
 ## Hardware
 
-- **Board:** ESP32-C6 (tested on WaveShare ESP32-C6 DevKit, 8MB flash)
+- **Tested on:** ESP32-C6 (WaveShare DevKit, 8MB flash)
+- **Compatible:** Any ESP32 with WiFi (C3, C6, S3, S2, classic ESP32)
 - **Platform:** [pioarduino](https://github.com/pioarduino/platform-espressif32) via PlatformIO
 - **Requirements:** WiFi network, [OpenRouter](https://openrouter.ai/) API key
+
+Onboard RGB LED control works out of the box on Espressif DevKit boards with WS2812B (C3, C6, S3). Boards without an onboard RGB LED can skip the `led_set` tool - everything else works the same.
 
 The dev board alone is enough to get started - chip temperature sensor and RGB LED work out of the box. Add external sensors and actuators as needed.
 
