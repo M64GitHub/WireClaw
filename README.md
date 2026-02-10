@@ -1,4 +1,4 @@
-# WireClaw
+# [WireClaw](https://wireclaw.io)
 
 An AI agent that lives on a $5 microcontroller and controls real hardware.
 
