@@ -54,6 +54,7 @@ struct Rule {
     /* Timing */
     uint32_t interval_ms;
     uint32_t last_eval;                 /* runtime only, not persisted */
+    uint32_t last_telegram_ms;          /* runtime only, cooldown tracking */
 
     /* State */
     bool fired;                         /* runtime only */

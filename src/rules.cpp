@@ -16,6 +16,7 @@ extern NatsClient natsClient;
 extern bool g_nats_connected;
 extern bool g_debug;
 extern bool g_telegram_enabled;
+extern int cfg_telegram_cooldown;
 extern bool tgSendMessage(const char *text);
 
 /* NATS events subject — built from device name in main.cpp */
@@ -185,7 +186,7 @@ bool ruleEnable(const char *id, bool enable) {
  * Action Execution
  *============================================================================*/
 
-static void executeAction(const Rule *r, bool is_on) {
+static void executeAction(Rule *r, bool is_on) {
     ActionType action = is_on ? r->on_action : r->off_action;
 
     switch (action) {
@@ -227,9 +228,16 @@ static void executeAction(const Rule *r, bool is_on) {
         }
         case ACT_TELEGRAM: {
             if (!g_telegram_enabled) break;
+            uint32_t now = millis();
+            uint32_t cooldown_ms = (uint32_t)cfg_telegram_cooldown * 1000;
+            if (cooldown_ms > 0 && now - r->last_telegram_ms < cooldown_ms) {
+                if (g_debug) Serial.printf("[Rule] %s: Telegram cooldown, skipping\n", r->id);
+                break;
+            }
             const char *msg = is_on ? r->on_nats_pay : r->off_nats_pay;
             if (msg[0]) {
                 tgSendMessage(msg);
+                r->last_telegram_ms = now;
                 if (g_debug) Serial.printf("[Rule] %s: Telegram: %s\n", r->id, msg);
             }
             break;
@@ -255,6 +263,11 @@ static void publishRuleEvent(const Rule *r, bool is_on) {
 void rulesEvaluate() {
     uint32_t now = millis();
 
+    /* Sensor read cache — each unique sensor read once per cycle */
+    struct SensorCache { char name[DEV_NAME_LEN]; float value; };
+    SensorCache cache[MAX_RULES];
+    int cacheCount = 0;
+
     for (int i = 0; i < MAX_RULES; i++) {
         Rule *r = &g_rules[i];
         if (!r->used || !r->enabled) continue;
@@ -263,17 +276,35 @@ void rulesEvaluate() {
         if (now - r->last_eval < r->interval_ms) continue;
         r->last_eval = now;
 
-        /* Read sensor */
+        /* Read sensor (with cache for named devices) */
         float reading = 0.0f;
         if (r->sensor_name[0]) {
-            Device *dev = deviceFind(r->sensor_name);
-            if (dev) {
-                reading = deviceReadSensor(dev);
-            } else {
-                continue; /* Device not found — skip */
+            /* Check cache first */
+            bool found = false;
+            for (int c = 0; c < cacheCount; c++) {
+                if (strcmp(cache[c].name, r->sensor_name) == 0) {
+                    reading = cache[c].value;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                Device *dev = deviceFind(r->sensor_name);
+                if (dev) {
+                    reading = deviceReadSensor(dev);
+                    /* Store in cache */
+                    if (cacheCount < MAX_RULES) {
+                        strncpy(cache[cacheCount].name, r->sensor_name, DEV_NAME_LEN - 1);
+                        cache[cacheCount].name[DEV_NAME_LEN - 1] = '\0';
+                        cache[cacheCount].value = reading;
+                        cacheCount++;
+                    }
+                } else {
+                    continue; /* Device not found — skip */
+                }
             }
         } else {
-            /* Raw GPIO */
+            /* Raw GPIO — no caching */
             if (r->sensor_analog) {
                 reading = (float)analogRead(r->sensor_pin);
             } else {

@@ -262,21 +262,55 @@ Rules monitor a sensor, evaluate a condition, and trigger an action — all in t
 | `change` | Sensor reading changed since last check |
 | `always` | Always fire (useful with intervals) |
 
+### Sensor Sources
+
+Rules need a sensor to monitor. Two options:
+
+- **Named sensor** (`sensor_name`) — a device from the registry (e.g. `chip_temp`, or any registered sensor). Preferred.
+- **Raw GPIO pin** (`sensor_pin`) — reads a GPIO directly. Set `sensor_analog=true` for `analogRead()` (0–4095), otherwise `digitalRead()` (0/1).
+
+Multiple rules monitoring the same named sensor see the exact same reading per evaluation cycle (cached internally).
+
 ### Actions
 
-| Action | Description |
-|--------|-------------|
-| `actuator` | Set a registered actuator on/off (resolves by device name) |
-| `led_set` | Set the onboard RGB LED (on_r/on_g/on_b params, 0-255) |
-| `gpio_write` | Write a raw GPIO pin HIGH/LOW |
-| `nats_publish` | Publish a message to a NATS subject |
-| `telegram` | Send a Telegram message (on_telegram_message / off_telegram_message) |
+Each rule has an **on action** (fires when condition becomes true) and an optional **off action** (fires when condition clears). All parameters below have `on_` and `off_` variants.
+
+| Action | Parameters | Description |
+|--------|-----------|-------------|
+| `actuator` | `actuator_name` | Set a registered actuator on/off by device name. Simplest option — just provide the actuator name and the rule handles on=1/off=0 automatically. |
+| `led_set` | `on_r`, `on_g`, `on_b` (0–255) | Set the onboard RGB LED color. |
+| `gpio_write` | `on_pin`, `on_value` (0 or 1) | Write a raw GPIO pin HIGH/LOW. |
+| `nats_publish` | `on_nats_subject`, `on_nats_payload` | Publish a message to a NATS subject. |
+| `telegram` | `on_telegram_message` | Send a Telegram message. Subject to `telegram_cooldown` (default 60s per rule). |
+
+### Examples
+
+You just describe what you want in natural language. The AI picks the right parameters:
+
+```
+"Set GPIO 4 high when chip_temp exceeds 30, low when it drops back."
+→ on_action=gpio_write, on_pin=4, on_value=1
+  off_action=gpio_write, off_pin=4, off_value=0
+
+"Turn on the fan when temperature exceeds 28."
+→ actuator_name=fan (auto on/off)
+
+"Set LED red above 35, green below."
+→ on_action=led_set, on_r=255, on_g=0, on_b=0
+  off_action=led_set, off_r=0, off_g=255, off_b=0
+
+"Alert me on Telegram when chip_temp goes above 40."
+→ on_action=telegram, on_telegram_message="Chip over 40!"
+  off_action=telegram, off_telegram_message="Back to normal."
+```
 
 ### Behavior
 
 - **Edge-triggered** — fires once on threshold crossing, not repeatedly
 - **Auto-off** — when using `actuator_name` or `off_action`, the reverse action runs when the condition clears
 - **Interval** — configurable per rule (default 5 seconds)
+- **Telegram cooldown** — per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
+- **Sensor caching** — all rules monitoring the same sensor see the same value per evaluation cycle
 - **NATS events** — every rule trigger publishes to `{device_name}.events`
 - **Persistence** — rules survive reboots (`/rules.json`)
 - **IDs** — auto-assigned: `rule_01`, `rule_02`, etc.
@@ -365,6 +399,7 @@ nats req wireclaw-01.cmd "rules"
 | `nats_port` | NATS server port (default: 4222) |
 | `telegram_token` | Telegram bot token from [@BotFather](https://t.me/BotFather) (empty = disabled) |
 | `telegram_chat_id` | Allowed Telegram chat ID |
+| `telegram_cooldown` | Minimum seconds between Telegram messages per rule (default: 60, 0 = disabled) |
 
 Edit `data/system_prompt.txt` to customize the AI's personality and instructions.
 

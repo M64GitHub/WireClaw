@@ -39,6 +39,7 @@ static int  cfg_nats_port = 4222;
 static char cfg_telegram_token[64];
 static char cfg_telegram_chat_id[16];
 static char cfg_system_prompt[4096];
+int cfg_telegram_cooldown = 60;  /* seconds, 0 = disabled */
 
 /* Placeholder defaults — overridden by LittleFS config.json */
 static void configDefaults() {
@@ -156,6 +157,10 @@ static bool loadConfig() {
         }
         jsonGetString(json_buf, "telegram_token", cfg_telegram_token, sizeof(cfg_telegram_token));
         jsonGetString(json_buf, "telegram_chat_id", cfg_telegram_chat_id, sizeof(cfg_telegram_chat_id));
+        char cd_buf[8];
+        if (jsonGetString(json_buf, "telegram_cooldown", cd_buf, sizeof(cd_buf))) {
+            cfg_telegram_cooldown = atoi(cd_buf);
+        }
     } else {
         Serial.printf("LittleFS: no config.json, using defaults\n");
     }
@@ -1066,6 +1071,32 @@ void handleSerialCommand(const char *input) {
                           (int)r->threshold,
                           (int)r->last_reading,
                           r->fired ? "FIRED" : "idle");
+            Serial.printf("    on:  %s", actionTypeName(r->on_action));
+            if (r->on_action == ACT_LED_SET) {
+                int32_t v = r->on_value;
+                Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
+            } else if (r->on_action == ACT_TELEGRAM || r->on_action == ACT_NATS_PUBLISH) {
+                Serial.printf(" \"%s\"", r->on_nats_pay);
+            } else if (r->on_action == ACT_ACTUATOR) {
+                Serial.printf(" %s", r->on_actuator);
+            } else if (r->on_action == ACT_GPIO_WRITE) {
+                Serial.printf(" pin=%d val=%d", r->on_pin, (int)r->on_value);
+            }
+            Serial.printf("\n");
+            if (r->has_off_action) {
+                Serial.printf("    off: %s", actionTypeName(r->off_action));
+                if (r->off_action == ACT_LED_SET) {
+                    int32_t v = r->off_value;
+                    Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
+                } else if (r->off_action == ACT_TELEGRAM || r->off_action == ACT_NATS_PUBLISH) {
+                    Serial.printf(" \"%s\"", r->off_nats_pay);
+                } else if (r->off_action == ACT_ACTUATOR) {
+                    Serial.printf(" %s", r->off_actuator);
+                } else if (r->off_action == ACT_GPIO_WRITE) {
+                    Serial.printf(" pin=%d val=%d", r->off_pin, (int)r->off_value);
+                }
+                Serial.printf("\n");
+            }
             count++;
         }
         if (count == 0) Serial.printf("  (none)\n");
