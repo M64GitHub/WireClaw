@@ -11,6 +11,7 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <nats_atoms.h>
+#include <esp_task_wdt.h>
 #include "driver/temperature_sensor.h"
 
 /* Forward declarations (defined in main.cpp) */
@@ -91,10 +92,11 @@ static const char *TOOLS_JSON = R"JSON([
 {"type":"function","function":{"name":"device_remove","description":"Remove a registered device by name.","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"sensor_read","description":"Read a named sensor. Returns value with unit.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Sensor device name"}},"required":["name"]}}},
 {"type":"function","function":{"name":"actuator_set","description":"Set a named actuator. Value: 0/1 for digital/relay, 0-255 for PWM.","parameters":{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"integer"}},"required":["name","value"]}}},
-{"type":"function","function":{"name":"rule_create","description":"Create an automation rule. Evaluates sensor condition periodically, executes action on trigger. Use actuator_name for device registry actuators, or on_action with on_pin/on_value for raw GPIO. For LED actions use on_action='led_set' with on_r/on_g/on_b (0-255). off_action 'auto' reverses when condition clears.","parameters":{"type":"object","properties":{"rule_name":{"type":"string","description":"Rule name"},"sensor_name":{"type":"string","description":"Named sensor from device registry"},"sensor_pin":{"type":"integer","description":"Raw GPIO pin (if no sensor_name)"},"condition":{"type":"string","description":"gt, lt, eq, neq, change, always"},"threshold":{"type":"integer","description":"Threshold value"},"interval_seconds":{"type":"integer","description":"Check interval in seconds (default 5)"},"actuator_name":{"type":"string","description":"Named actuator - auto-sets on/off actions"},"on_action":{"type":"string","description":"gpio_write, led_set, nats_publish, actuator, telegram"},"on_pin":{"type":"integer"},"on_value":{"type":"integer"},"on_r":{"type":"integer","description":"LED red 0-255 (for led_set)"},"on_g":{"type":"integer","description":"LED green 0-255 (for led_set)"},"on_b":{"type":"integer","description":"LED blue 0-255 (for led_set)"},"on_nats_subject":{"type":"string"},"on_nats_payload":{"type":"string"},"on_telegram_message":{"type":"string","description":"Message to send via Telegram (for telegram action)"},"off_action":{"type":"string","description":"auto, none, gpio_write, led_set, nats_publish, actuator, telegram"},"off_pin":{"type":"integer"},"off_value":{"type":"integer"},"off_r":{"type":"integer","description":"LED red 0-255 (for led_set)"},"off_g":{"type":"integer","description":"LED green 0-255 (for led_set)"},"off_b":{"type":"integer","description":"LED blue 0-255 (for led_set)"},"off_nats_subject":{"type":"string"},"off_nats_payload":{"type":"string"},"off_telegram_message":{"type":"string","description":"Message to send via Telegram (for telegram action)"}},"required":["rule_name","condition","threshold"]}}},
+{"type":"function","function":{"name":"rule_create","description":"Create an automation rule. Evaluates sensor condition periodically, executes action on trigger. Use actuator_name for device registry actuators, or on_action with on_pin/on_value for raw GPIO. For LED actions use on_action='led_set' with on_r/on_g/on_b (0-255). off_action 'auto' reverses when condition clears.","parameters":{"type":"object","properties":{"rule_name":{"type":"string","description":"Rule name"},"sensor_name":{"type":"string","description":"Named sensor from device registry"},"sensor_pin":{"type":"integer","description":"Raw GPIO pin (if no sensor_name)"},"condition":{"type":"string","description":"gt, lt, eq, neq, change, always"},"threshold":{"type":"integer","description":"Threshold value"},"interval_seconds":{"type":"integer","description":"Check interval in seconds (default 5)"},"actuator_name":{"type":"string","description":"Named actuator - auto-sets on/off actions"},"on_action":{"type":"string","description":"gpio_write, led_set, nats_publish, actuator, telegram"},"on_pin":{"type":"integer"},"on_value":{"type":"integer"},"on_r":{"type":"integer","description":"LED red 0-255 (for led_set)"},"on_g":{"type":"integer","description":"LED green 0-255 (for led_set)"},"on_b":{"type":"integer","description":"LED blue 0-255 (for led_set)"},"on_nats_subject":{"type":"string"},"on_nats_payload":{"type":"string"},"on_telegram_message":{"type":"string","description":"Telegram message. Use {value} for sensor reading, {device_name} for any sensor e.g. {chip_temp}"},"off_action":{"type":"string","description":"auto, none, gpio_write, led_set, nats_publish, actuator, telegram"},"off_pin":{"type":"integer"},"off_value":{"type":"integer"},"off_r":{"type":"integer","description":"LED red 0-255 (for led_set)"},"off_g":{"type":"integer","description":"LED green 0-255 (for led_set)"},"off_b":{"type":"integer","description":"LED blue 0-255 (for led_set)"},"off_nats_subject":{"type":"string"},"off_nats_payload":{"type":"string"},"off_telegram_message":{"type":"string","description":"Telegram message. Use {value} for sensor reading, {device_name} for any sensor e.g. {chip_temp}"}},"required":["rule_name","condition","threshold"]}}},
 {"type":"function","function":{"name":"rule_list","description":"List all rules with status, last readings, triggered state.","parameters":{"type":"object","properties":{}}}},
 {"type":"function","function":{"name":"rule_delete","description":"Delete a rule by ID (e.g. rule_01) or 'all'.","parameters":{"type":"object","properties":{"rule_id":{"type":"string"}},"required":["rule_id"]}}},
-{"type":"function","function":{"name":"rule_enable","description":"Enable or disable a rule without deleting it.","parameters":{"type":"object","properties":{"rule_id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["rule_id","enabled"]}}}
+{"type":"function","function":{"name":"rule_enable","description":"Enable or disable a rule without deleting it.","parameters":{"type":"object","properties":{"rule_id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["rule_id","enabled"]}}},
+{"type":"function","function":{"name":"remote_chat","description":"Send a message to another WireClaw device on the same NATS network. Returns the device's response.","parameters":{"type":"object","properties":{"device":{"type":"string","description":"Target device name"},"message":{"type":"string","description":"Message to send"}},"required":["device","message"]}}}
 ])JSON";
 
 /*============================================================================
@@ -601,15 +603,17 @@ static void tool_rule_list(const char *args, char *result, int result_len) {
 
         if (count > 0) w += snprintf(result + w, result_len - w, "; ");
 
+        uint32_t ago = r->last_triggered ? (millis() - r->last_triggered) / 1000 : 0;
         w += snprintf(result + w, result_len - w,
-            "%s '%s' %s %s%s %d val=%d %s",
+            "%s '%s' %s %s%s %d val=%d %s last=%us",
             r->id, r->name,
             r->enabled ? "ON" : "OFF",
             r->sensor_name[0] ? r->sensor_name : "pin",
             r->sensor_name[0] ? "" : "",
             (int)r->threshold,
             (int)r->last_reading,
-            r->fired ? "FIRED" : "idle");
+            r->fired ? "FIRED" : "idle",
+            (unsigned)ago);
         count++;
     }
 
@@ -654,6 +658,63 @@ static void tool_rule_enable(const char *args, char *result, int result_len) {
 
     rulesSave();
     snprintf(result, result_len, "Rule %s %s", rule_id, enabled ? "enabled" : "disabled");
+}
+
+/*============================================================================
+ * Multi-Device Tool Handler
+ *============================================================================*/
+
+static void tool_remote_chat(const char *args, char *result, int result_len) {
+    if (!g_nats_connected) {
+        snprintf(result, result_len, "Error: NATS not connected");
+        return;
+    }
+
+    char device[32];
+    char message[256];
+
+    if (!jsonArgString(args, "device", device, sizeof(device))) {
+        snprintf(result, result_len, "Error: missing 'device'");
+        return;
+    }
+    if (!jsonArgString(args, "message", message, sizeof(message))) {
+        snprintf(result, result_len, "Error: missing 'message'");
+        return;
+    }
+
+    /* Build subject: "{device}.chat" */
+    char subject[64];
+    snprintf(subject, sizeof(subject), "%s.chat", device);
+
+    /* NATS request/reply with 30s timeout */
+    static nats_request_t req;
+
+    nats_err_t err = natsClient.requestStart(&req, subject, message, 30000);
+    if (err != NATS_OK) {
+        snprintf(result, result_len, "Error: request failed: %s", nats_err_str(err));
+        return;
+    }
+
+    /* Poll until complete or timeout */
+    while (true) {
+        esp_task_wdt_reset();
+        natsClient.process();
+        nats_err_t status = natsClient.requestCheck(&req);
+        if (status == NATS_OK) {
+            /* Got response - response_data is uint8_t[], response_len is size_t */
+            int copy_len = (int)req.response_len < result_len - 1
+                           ? (int)req.response_len : result_len - 1;
+            memcpy(result, req.response_data, copy_len);
+            result[copy_len] = '\0';
+            return;
+        }
+        if (status != NATS_ERR_WOULD_BLOCK) {
+            snprintf(result, result_len, "Error: %s (device '%s' may be offline)",
+                     nats_err_str(status), device);
+            return;
+        }
+        delay(50);
+    }
 }
 
 /*============================================================================
@@ -702,6 +763,8 @@ bool toolExecute(const char *name, const char *args_json,
         tool_rule_delete(args_json, result, result_len);
     } else if (strcmp(name, "rule_enable") == 0) {
         tool_rule_enable(args_json, result, result_len);
+    } else if (strcmp(name, "remote_chat") == 0) {
+        tool_remote_chat(args_json, result, result_len);
     } else {
         snprintf(result, result_len, "Error: unknown tool '%s'", name);
         return false;

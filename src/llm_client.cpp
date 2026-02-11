@@ -6,10 +6,10 @@
 #include "llm_client.h"
 #include <WiFiClientSecure.h>
 
-/* OpenRouter API endpoint */
-static const char *OPENROUTER_HOST = "openrouter.ai";
-static const int   OPENROUTER_PORT = 443;
-static const char *OPENROUTER_PATH = "/api/v1/chat/completions";
+/* Default OpenRouter API endpoint */
+static const char *DEFAULT_HOST = "openrouter.ai";
+static const int   DEFAULT_PORT = 443;
+static const char *DEFAULT_PATH = "/api/v1/chat/completions";
 
 /* ---- JSON helpers ---- */
 
@@ -161,15 +161,77 @@ static const char *json_skip_value(const char *p, const char *end) {
 /* ---- LlmClient implementation ---- */
 
 LlmClient::LlmClient()
-    : m_api_key(nullptr), m_model(nullptr) {
+    : m_client(nullptr), m_api_key(nullptr), m_model(nullptr),
+      m_port(443), m_use_tls(true) {
     m_error[0] = '\0';
+    m_host[0] = '\0';
+    m_path[0] = '\0';
 }
 
-void LlmClient::begin(const char *api_key, const char *model) {
+void LlmClient::begin(const char *api_key, const char *model, const char *base_url) {
     m_api_key = api_key;
     m_model = model;
-    m_client.setInsecure(); /* TODO: add proper root CA pinning */
-    m_client.setTimeout(LLM_READ_TIMEOUT_MS / 1000);
+
+    /* Parse base_url or use defaults */
+    if (base_url && base_url[0]) {
+        const char *p = base_url;
+        if (strncmp(p, "https://", 8) == 0) {
+            m_use_tls = true;
+            m_port = 443;
+            p += 8;
+        } else if (strncmp(p, "http://", 7) == 0) {
+            m_use_tls = false;
+            m_port = 80;
+            p += 7;
+        } else {
+            m_use_tls = true;
+            m_port = 443;
+        }
+
+        /* Extract host:port and path */
+        const char *slash = strchr(p, '/');
+        const char *colon = strchr(p, ':');
+        if (colon && (!slash || colon < slash)) {
+            int hlen = colon - p;
+            if (hlen >= (int)sizeof(m_host)) hlen = sizeof(m_host) - 1;
+            memcpy(m_host, p, hlen);
+            m_host[hlen] = '\0';
+            m_port = atoi(colon + 1);
+            if (slash) {
+                strncpy(m_path, slash, sizeof(m_path) - 1);
+                m_path[sizeof(m_path) - 1] = '\0';
+            } else {
+                strncpy(m_path, "/", sizeof(m_path));
+            }
+        } else if (slash) {
+            int hlen = slash - p;
+            if (hlen >= (int)sizeof(m_host)) hlen = sizeof(m_host) - 1;
+            memcpy(m_host, p, hlen);
+            m_host[hlen] = '\0';
+            strncpy(m_path, slash, sizeof(m_path) - 1);
+            m_path[sizeof(m_path) - 1] = '\0';
+        } else {
+            strncpy(m_host, p, sizeof(m_host) - 1);
+            m_host[sizeof(m_host) - 1] = '\0';
+            strncpy(m_path, "/", sizeof(m_path));
+        }
+        Serial.printf("LLM: %s://%s:%d%s\n",
+                      m_use_tls ? "https" : "http", m_host, m_port, m_path);
+    } else {
+        m_use_tls = true;
+        strncpy(m_host, DEFAULT_HOST, sizeof(m_host));
+        m_port = DEFAULT_PORT;
+        strncpy(m_path, DEFAULT_PATH, sizeof(m_path));
+    }
+
+    if (m_use_tls) {
+        m_secure_client.setInsecure();
+        m_secure_client.setTimeout(LLM_READ_TIMEOUT_MS / 1000);
+        m_client = &m_secure_client;
+    } else {
+        m_plain_client.setTimeout(LLM_READ_TIMEOUT_MS / 1000);
+        m_client = &m_plain_client;
+    }
 }
 
 int LlmClient::buildRequest(char *buf, int buf_len,
@@ -401,7 +463,7 @@ int LlmClient::readResponse(char *buf, int buf_len) {
     int content_length = -1;
     bool chunked = false;
 
-    String status_line = m_client.readStringUntil('\n');
+    String status_line = m_client->readStringUntil('\n');
     if (status_line.length() < 12) {
         snprintf(m_error, sizeof(m_error), "Invalid HTTP response");
         return -1;
@@ -409,8 +471,8 @@ int LlmClient::readResponse(char *buf, int buf_len) {
     int http_status = status_line.substring(9, 12).toInt();
     if (g_debug) Serial.printf("[LLM] HTTP %d\n", http_status);
 
-    while (m_client.connected()) {
-        String header = m_client.readStringUntil('\n');
+    while (m_client->connected()) {
+        String header = m_client->readStringUntil('\n');
         header.trim();
         if (header.length() == 0) break;
 
@@ -429,18 +491,18 @@ int LlmClient::readResponse(char *buf, int buf_len) {
     if (content_length > 0 && !chunked) {
         int to_read = content_length < (buf_len - 1) ?
                       content_length : (buf_len - 1);
-        total = m_client.readBytes(buf, to_read);
+        total = m_client->readBytes(buf, to_read);
     } else {
         unsigned long last_data = millis();
         while (total < buf_len - 1) {
-            int avail = m_client.available();
+            int avail = m_client->available();
             if (avail > 0) {
                 int to_read = avail < (buf_len - 1 - total) ?
                               avail : (buf_len - 1 - total);
-                int rd = m_client.readBytes(buf + total, to_read);
+                int rd = m_client->readBytes(buf + total, to_read);
                 total += rd;
                 last_data = millis();
-            } else if (!m_client.connected()) {
+            } else if (!m_client->connected()) {
                 break;
             } else if (millis() - last_data > 10000) {
                 if (g_debug) Serial.printf("[LLM] Read timeout after %d bytes\n", total);
@@ -471,34 +533,36 @@ bool LlmClient::chat(const LlmMessage *messages, int count,
         return false;
     }
 
-    if (g_debug) Serial.printf("[LLM] Connecting to %s...\n", OPENROUTER_HOST);
+    if (g_debug) Serial.printf("[LLM] Connecting to %s:%d...\n", m_host, m_port);
     unsigned long t0 = millis();
 
-    if (!m_client.connect(OPENROUTER_HOST, OPENROUTER_PORT)) {
-        snprintf(m_error, sizeof(m_error), "TLS connect failed");
+    if (!m_client->connect(m_host, m_port)) {
+        snprintf(m_error, sizeof(m_error), "%s connect failed",
+                 m_use_tls ? "TLS" : "TCP");
         return false;
     }
 
     if (g_debug) Serial.printf("[LLM] Connected (%lums). Sending %d bytes...\n",
                                millis() - t0, req_len);
 
-    m_client.printf("POST %s HTTP/1.1\r\n", OPENROUTER_PATH);
-    m_client.printf("Host: %s\r\n", OPENROUTER_HOST);
-    m_client.printf("Authorization: Bearer %s\r\n", m_api_key);
-    m_client.printf("Content-Type: application/json\r\n");
-    m_client.printf("Content-Length: %d\r\n", req_len);
-    m_client.printf("Connection: close\r\n");
-    m_client.printf("\r\n");
-    m_client.write((uint8_t *)request_buf, req_len);
+    m_client->printf("POST %s HTTP/1.1\r\n", m_path);
+    m_client->printf("Host: %s\r\n", m_host);
+    if (m_api_key && m_api_key[0])
+        m_client->printf("Authorization: Bearer %s\r\n", m_api_key);
+    m_client->printf("Content-Type: application/json\r\n");
+    m_client->printf("Content-Length: %d\r\n", req_len);
+    m_client->printf("Connection: close\r\n");
+    m_client->printf("\r\n");
+    m_client->write((uint8_t *)request_buf, req_len);
 
     if (g_debug) Serial.printf("[LLM] Request sent. Waiting for response...\n");
 
     unsigned long wait_start = millis();
-    while (!m_client.available()) {
+    while (!m_client->available()) {
         if (millis() - wait_start > LLM_READ_TIMEOUT_MS) {
             snprintf(m_error, sizeof(m_error), "Response timeout (%ds)",
                      LLM_READ_TIMEOUT_MS / 1000);
-            m_client.stop();
+            m_client->stop();
             return false;
         }
         delay(50);
@@ -507,7 +571,7 @@ bool LlmClient::chat(const LlmMessage *messages, int count,
     static char response_buf[LLM_MAX_RESPONSE_LEN + 2048];
     int body_len = readResponse(response_buf, sizeof(response_buf));
 
-    m_client.stop();
+    m_client->stop();
 
     if (body_len <= 0) {
         snprintf(m_error, sizeof(m_error), "Empty response body");

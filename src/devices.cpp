@@ -20,7 +20,7 @@ static Device g_devices[MAX_DEVICES];
  *============================================================================*/
 
 bool deviceIsSensor(DeviceKind kind) {
-    return kind <= DEV_SENSOR_INTERNAL_TEMP;
+    return kind <= DEV_SENSOR_CLOCK_HHMM;
 }
 
 bool deviceIsActuator(DeviceKind kind) {
@@ -34,6 +34,9 @@ const char *deviceKindName(DeviceKind kind) {
         case DEV_SENSOR_NTC_10K:       return "ntc_10k";
         case DEV_SENSOR_LDR:           return "ldr";
         case DEV_SENSOR_INTERNAL_TEMP: return "internal_temp";
+        case DEV_SENSOR_CLOCK_HOUR:    return "clock_hour";
+        case DEV_SENSOR_CLOCK_MINUTE:  return "clock_minute";
+        case DEV_SENSOR_CLOCK_HHMM:   return "clock_hhmm";
         case DEV_ACTUATOR_DIGITAL:     return "digital_out";
         case DEV_ACTUATOR_RELAY:       return "relay";
         case DEV_ACTUATOR_PWM:         return "pwm";
@@ -47,6 +50,9 @@ static DeviceKind kindFromString(const char *s) {
     if (strcmp(s, "ntc_10k") == 0)       return DEV_SENSOR_NTC_10K;
     if (strcmp(s, "ldr") == 0)           return DEV_SENSOR_LDR;
     if (strcmp(s, "internal_temp") == 0) return DEV_SENSOR_INTERNAL_TEMP;
+    if (strcmp(s, "clock_hour") == 0)    return DEV_SENSOR_CLOCK_HOUR;
+    if (strcmp(s, "clock_minute") == 0)  return DEV_SENSOR_CLOCK_MINUTE;
+    if (strcmp(s, "clock_hhmm") == 0)   return DEV_SENSOR_CLOCK_HHMM;
     if (strcmp(s, "digital_out") == 0)   return DEV_ACTUATOR_DIGITAL;
     if (strcmp(s, "relay") == 0)         return DEV_ACTUATOR_RELAY;
     if (strcmp(s, "pwm") == 0)           return DEV_ACTUATOR_PWM;
@@ -143,6 +149,27 @@ float deviceReadSensor(const Device *dev) {
             if (g_temp_sensor)
                 temperature_sensor_get_celsius(g_temp_sensor, &t);
             return t;
+        }
+
+        case DEV_SENSOR_CLOCK_HOUR: {
+            struct tm timeinfo;
+            if (getLocalTime(&timeinfo, 0))
+                return (float)timeinfo.tm_hour;
+            return -1.0f;
+        }
+
+        case DEV_SENSOR_CLOCK_MINUTE: {
+            struct tm timeinfo;
+            if (getLocalTime(&timeinfo, 0))
+                return (float)timeinfo.tm_min;
+            return -1.0f;
+        }
+
+        case DEV_SENSOR_CLOCK_HHMM: {
+            struct tm timeinfo;
+            if (getLocalTime(&timeinfo, 0))
+                return (float)(timeinfo.tm_hour * 100 + timeinfo.tm_min);
+            return -1.0f;
         }
 
         default:
@@ -318,11 +345,25 @@ void devicesInit() {
 
     devicesLoad();
 
-    /* Auto-register chip_temp if not already present */
+    /* Auto-register built-in virtual sensors if not already present */
+    bool changed = false;
     if (!deviceFind("chip_temp")) {
         deviceRegister("chip_temp", DEV_SENSOR_INTERNAL_TEMP, PIN_NONE, "C", false);
-        devicesSave();
+        changed = true;
     }
+    if (!deviceFind("clock_hour")) {
+        deviceRegister("clock_hour", DEV_SENSOR_CLOCK_HOUR, PIN_NONE, "h", false);
+        changed = true;
+    }
+    if (!deviceFind("clock_minute")) {
+        deviceRegister("clock_minute", DEV_SENSOR_CLOCK_MINUTE, PIN_NONE, "m", false);
+        changed = true;
+    }
+    if (!deviceFind("clock_hhmm")) {
+        deviceRegister("clock_hhmm", DEV_SENSOR_CLOCK_HHMM, PIN_NONE, "", false);
+        changed = true;
+    }
+    if (changed) devicesSave();
 
     int count = 0;
     for (int i = 0; i < MAX_DEVICES; i++)

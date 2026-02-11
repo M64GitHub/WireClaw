@@ -2,14 +2,14 @@
 
 An AI agent that lives on a $5 microcontroller and controls real hardware.
 
-Tell it what you want in plain language - over Telegram, serial, or NATS - and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI.
+Tell it what you want in plain language - over Telegram, serial, or NATS - and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI. It remembers your preferences across reboots, knows what time it is, and can talk to other WireClaw devices on the network.
 
 ```
 You:  "When the chip temperature goes above 28, set the LED orange.
        When it drops back down, set it cyan."
 
-WireClaw: "I've created a rule to set the LED to orange when the temperature exceeds 28  
-           degrees and to cyan when it goes below. If you need any further adjustments  
+WireClaw: "I've created a rule to set the LED to orange when the temperature exceeds 28
+           degrees and to cyan when it goes below. If you need any further adjustments
            or assistance, feel free to ask!"
 
 Serial Debug: rule_create(sensor_name="chip_temp", condition="gt", threshold=28,
@@ -21,35 +21,80 @@ Serial Debug: rule_create(sensor_name="chip_temp", condition="gt", threshold=28,
 
 The rule now runs in the main loop. No cloud, no server, no LLM calls. Just the ESP32 checking the sensor every 5 seconds and flipping the LED.
 
+It remembers things too:
+
+```
+You:  "My favorite color is blue."
+
+WireClaw: "I've noted that your favorite color is blue. If there's anything else
+           you'd like to share or ask, feel free!"
+
+          (writes "User's favorite color is blue." to /memory.txt)
+
+--- reboot, hours later ---
+
+You:  "Set the LED to my favorite color."
+
+WireClaw: "The LED is now set to your favorite color, blue!
+           If you need anything, just let me know."
+
+Serial Debug: led_set(r=0, g=0, b=255)
+```
+
+The AI persists notes to flash and reloads them into every conversation. Preferences, device nicknames, observations - they survive reboots.
+
 It can also text you:
 
 ```
 You:  "Send me a Telegram message when chip temperature goes above 40."
 
-WireClaw: "I've created a new rule to send a Telegram message when the temperature exceeds 40°C. 
-           You will receive a warning message, and another notification when the temperature 
+WireClaw: "I've created a new rule to send a Telegram message when the temperature exceeds 40°C.
+           You will receive a warning message, and another notification when the temperature
            returns to normal. Let me know if you need anything else!"
 
 Serial Debug: rule_create(sensor_name="chip_temp", condition="gt", threshold=40,
                        on_action="telegram",
-                       on_telegram_message="Chip is overheating!",
+                       on_telegram_message="Chip is {value}°C - overheating!",
                        off_action="telegram",
-                       off_telegram_message="Chip temperature back to normal.")
+                       off_telegram_message="Back to normal at {value}°C.")
 
        -> Rule created: rule_01 'heat alert' - chip_temp > 40 (every 5s) with auto-off
 ```
 
-The ESP32 monitors the sensor and sends you a Telegram message the moment the threshold is crossed - and another when it clears. No LLM in the loop.
+The ESP32 monitors the sensor and sends you a Telegram message the moment the threshold is crossed - with `{value}` replaced by the actual reading - and another when it clears. No LLM in the loop.
+
+It knows what time it is too:
+
+```
+You:  "Please send me a telegram message at 10:12 with the chip temperature"
+
+WireClaw: "I've set up a rule to send you a Telegram message with the chip
+           temperature at 10:12."
+
+Serial Debug: rule_create(sensor_name="clock_hhmm", condition="eq", threshold=1012,
+                       on_action="telegram",
+                       on_telegram_message="Chip temp: {chip_temp}°C")
+
+       -> Rule created: rule_01 'Send Telegram at 10:12' - clock_hhmm == 1012 (every 5s)
+
+       [Rule] rule_01 'Send Telegram at 10:12' TRIGGERED (reading=1012, threshold=1012)
+
+Telegram received: "Chip temp: 28.7°C"
+```
+
+Time synced via NTP, the `clock_hhmm` sensor encodes time as hour\*100+minute (1012 = 10:12), and `{chip_temp}` is replaced with the live sensor reading when the rule fires. Schedule-based automation with real data - no LLM involved at runtime.
 
 ## How It Works
 
 WireClaw runs two loops on the ESP32:
 
-**The AI loop** handles conversation. When you send a message - via Telegram, serial, or NATS - it calls an LLM through OpenRouter, which responds with tool calls. The AI can read sensors, flip GPIOs, set LEDs, and create automation rules. Up to 5 tool-call iterations per message. This is the setup phase.
+**The AI loop** handles conversation. When you send a message - via Telegram, serial, or NATS - it calls an LLM (OpenRouter over HTTPS, or a local server like Ollama over HTTP), which responds with tool calls. The AI can read sensors, flip GPIOs, set LEDs, create automation rules, remember things, and talk to other devices. Up to 5 tool-call iterations per message. This is the setup phase.
 
 **The rule loop** runs every iteration of `loop()`, continuously, with no network and no LLM. Each cycle it walks through all enabled rules, reads their sensors, evaluates their conditions, and fires their actions - GPIO writes, LED changes, NATS publishes, Telegram alerts - directly from the microcontroller. Rules persist to flash and survive reboots. This is what runs 24/7.
 
 The AI creates the rules. The rules run without the AI.
+
+Time is synced via NTP on boot. Persistent memory is loaded into every conversation as a system message, so the AI always has context about you and your setup.
 
 **`loop()`** - runs continuously on the ESP32:
 
@@ -58,14 +103,14 @@ The AI creates the rules. The rules run without the AI.
    - Actions: GPIO write, LED set, NATS publish, Telegram alert
 2. **AI chat** - triggered by incoming messages
    - Input: Telegram poll / Serial / NATS
-   - -> `chatWithLLM()` -> OpenRouter -> tool calls
-   - Tools: `rule_create`, `led_set`, `gpio_write`, `sensor_read`, ...
+   - -> `chatWithLLM()` -> LLM API -> tool calls
+   - Tools: `rule_create`, `led_set`, `gpio_write`, `sensor_read`, `remote_chat`, ...
 
 The rule loop and the AI loop share the same `loop()` function but serve different purposes. The rule engine evaluates every cycle regardless of whether anyone is chatting. Multiple rules monitoring the same sensor see the exact same reading per cycle (cached internally), so they always trigger and clear together.
 
 ## Try It With Just a Dev Board
 
-You don't need external sensors to test WireClaw. The ESP32's internal temperature sensor is pre-registered as `chip_temp`, and the onboard RGB LED is available as a rule action. Here's a full example using only the bare dev board:
+You don't need external sensors to test WireClaw. The ESP32's internal temperature sensor is pre-registered as `chip_temp`, clock sensors provide the current hour and minute, and the onboard RGB LED is available as a rule action. Here's some examples using only the bare dev board:
 
 ### Example: Temperature-Based LED Color
 
@@ -119,15 +164,119 @@ rule_create(
     condition            = "gt",
     threshold            = 40,
     on_action            = "telegram",
-    on_telegram_message  = "Chip temperature exceeded 40 C!",
+    on_telegram_message  = "Chip is {value}°C - overheating!",
     off_action           = "telegram",
-    off_telegram_message = "Chip temperature back to normal."
+    off_telegram_message = "Back to normal at {value}°C."
 )
 ```
 
 The ESP32 checks every 5 seconds. The moment it crosses 40, your phone buzzes. When it drops back down, you get the all-clear. No LLM calls, no cloud services - just a direct HTTPS request from the ESP32 to the Telegram API.
 
 You can combine actions too: "Set the LED red AND send me a Telegram message when temperature exceeds 50" creates two rules - one for the LED, one for the alert.
+
+### Example: Scheduled Telegram with Live Sensor Data
+
+Combine time-based rules with message interpolation to get sensor reports at specific times:
+
+```
+You:  "Please send me a telegram message at 10:12 with the chip temperature"
+
+WireClaw: "I've set up a rule to send you a Telegram message with the chip
+           temperature at 10:12."
+
+Serial Debug: rule_create(rule_name="Send Telegram at 10:12",
+                       sensor_name="clock_hhmm", condition="eq", threshold=1012,
+                       on_action="telegram",
+                       on_telegram_message="Chip temp: {chip_temp}°C")
+
+       -> Rule created: rule_01 'Send Telegram at 10:12' - clock_hhmm == 1012 (every 5s) with auto-off
+
+       [Rule] rule_01 'Send Telegram at 10:12' TRIGGERED (reading=1012, threshold=1012)
+
+Telegram received: "Chip temp: 28.7°C"
+```
+
+The `{chip_temp}` in the message was replaced with the live sensor reading (28.7°C) at the moment the rule fired. Use `{value}` for the triggering sensor's reading, or `{device_name}` for any named sensor.
+
+### Example: Time-Based Rules
+
+WireClaw syncs time via NTP on boot. Three virtual sensors - `clock_hour` (0-23), `clock_minute` (0-59), and `clock_hhmm` (hour\*100+minute, e.g. 810 = 08:10) - let you create schedule-based automation. Edge-triggered - fires once when the time matches, not repeatedly.
+
+For exact times (hour and minute), use the `clock_hhmm` sensor which encodes time as `hour*100+minute`:
+
+```
+You:  "Can you set the led to purple at 08:41 please?"
+
+WireClaw: "I've set a rule to turn the LED purple at 08:41.
+           It will automatically turn off afterward."
+
+Serial Debug: rule_create(rule_name="LED to Purple at 08:41",
+                       sensor_name="clock_hhmm", condition="eq", threshold=841,
+                       on_action="led_set", on_r=128, on_g=0, on_b=128,
+                       off_action="led_set", off_r=0, off_g=0, off_b=0)
+
+       -> Rule created: rule_01 'LED to Purple at 08:41' - clock_hhmm == 841 (every 5s) with auto-off
+
+       [Rule] rule_01 'LED to Purple at 08:41' TRIGGERED (reading=841, threshold=841)
+       [Rule] rule_01 'LED to Purple at 08:41' CLEARED (reading=842)
+```
+
+The threshold 841 means 08:41. Similarly, 1830 = 18:30, 2200 = 22:00. Edge-triggered: fires when the minute matches, auto-off clears when it passes.
+
+For periodic tasks, use `condition="always"` which fires every interval:
+
+```
+You:  "Send me a Telegram every 2 minutes saying 'heartbeat'."
+```
+
+Behind the scenes:
+
+```
+rule_create(
+    rule_name            = "heartbeat",
+    sensor_name          = "chip_temp",
+    condition            = "always",
+    interval_seconds     = 120,
+    on_action            = "telegram",
+    on_telegram_message  = "heartbeat"
+)
+```
+
+Verify with `/time`:
+
+```
+> /time
+2026-02-10 19:34:12 (TZ=CET-1CEST,M3.5.0,M10.5.0/3)
+```
+
+### Example: Persistent Memory
+
+Tell the AI something, and it remembers - even across reboots:
+
+```
+You:  "My favorite color is blue."
+AI:   "I've noted that your favorite color is blue."
+      -> file_write(path="/memory.txt", content="User's favorite color is blue.")
+```
+
+Check it on serial:
+
+```
+> /memory
+--- memory (30 bytes) ---
+User's favorite color is blue.
+---
+```
+
+Later (even after a power cycle):
+
+```
+You:  "Set the LED to my favorite color."
+AI:   "The LED is now set to your favorite color, blue!"
+      -> led_set(r=0, g=0, b=255)
+```
+
+The AI recalled "blue" from its persistent memory without being told again. It stores user preferences, device nicknames, and observations in `/memory.txt`, which is loaded into every conversation automatically.
 
 ### Example: Register an External Sensor + Actuator
 
@@ -154,6 +303,9 @@ Devices and rules persist to flash. After a reboot:
 > /devices
 --- devices ---
   chip_temp [internal_temp] pin=255  = 27.3 C
+  clock_hour [clock_hour] pin=255  = 19 h
+  clock_minute [clock_minute] pin=255  = 34 m
+  clock_hhmm [clock_hhmm] pin=255  = 1934
   temperature [ntc_10k] pin=4  = 24.1 C
   fan [relay] pin=16 (inverted)
 ---
@@ -168,10 +320,14 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 
 ## Features
 
-- **Rule Engine** - persistent local automation, edge-triggered, evaluated every loop iteration
-- **Telegram Alerts** - rules can send you push notifications directly, no LLM in the loop
+- **Rule Engine** - persistent local automation, evaluated every loop iteration, edge-triggered or periodic
+- **Time-Aware Rules** - NTP sync with POSIX timezone, `clock_hour`, `clock_minute`, and `clock_hhmm` virtual sensors for schedule-based automation
+- **Persistent Memory** - AI remembers user preferences, device nicknames, and observations across reboots
+- **Telegram Alerts** - rules send push notifications with live sensor values via `{device_name}` interpolation, no LLM in the loop
 - **Device Registry** - named sensors and actuators instead of raw pin numbers, persisted to flash
-- **AI Agent** - agentic loop with 17 tools, up to 5 iterations per message
+- **AI Agent** - agentic loop with 18 tools, up to 5 iterations per message
+- **Local LLM** - use a local server (Ollama, llama.cpp) over HTTP instead of cloud API
+- **Multi-Device Mesh** - devices talk to each other over NATS via `remote_chat`
 - **Telegram Bot** - chat with your ESP32 from your phone
 - **NATS Integration** - device-to-device messaging, commands, and rule-triggered events
 - **Serial Interface** - local chat and commands over USB (115200 baud)
@@ -182,11 +338,11 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 - **Tested on:** ESP32-C6 (WaveShare DevKit, 8MB flash)
 - **Compatible:** Any ESP32 with WiFi (C3, C6, S3, S2, classic ESP32)
 - **Platform:** [pioarduino](https://github.com/pioarduino/platform-espressif32) via PlatformIO
-- **Requirements:** WiFi network, [OpenRouter](https://openrouter.ai/) API key
+- **Requirements:** WiFi network, [OpenRouter](https://openrouter.ai/) API key or local LLM server
 
 Onboard RGB LED control works out of the box on Espressif DevKit boards with WS2812B (C3, C6, S3). Boards without an onboard RGB LED can skip the `led_set` tool - everything else works the same.
 
-The dev board alone is enough to get started - chip temperature sensor and RGB LED work out of the box. Add external sensors and actuators as needed.
+The dev board alone is enough to get started - chip temperature sensor, clock sensors, and RGB LED work out of the box. Add external sensors and actuators as needed.
 
 ## Quick Start
 
@@ -211,17 +367,21 @@ Edit `data/config.json`:
   "api_key": "sk-or-v1-your-openrouter-api-key",
   "model": "openai/gpt-4o-mini",
   "device_name": "wireclaw-01",
+  "api_base_url": "",
   "nats_host": "",
   "nats_port": "4222",
   "telegram_token": "",
   "telegram_chat_id": "",
-  "telegram_cooldown": "60"
+  "telegram_cooldown": "60",
+  "timezone": "CET-1CEST,M3.5.0,M10.5.0/3"
 }
 ```
 
-Leave `telegram_token` empty to disable Telegram. Leave `nats_host` empty to disable NATS.
+Leave `telegram_token` empty to disable Telegram. Leave `nats_host` empty to disable NATS. Leave `api_base_url` empty to use OpenRouter (default).
 
 For Telegram: create a bot via [@BotFather](https://t.me/BotFather), get your chat ID from [@userinfobot](https://t.me/userinfobot).
+
+For a local LLM: set `api_base_url` to your server's OpenAI-compatible endpoint, e.g. `http://192.168.1.50:11434/v1/chat/completions` for Ollama.
 
 ### 3. Build and Flash
 
@@ -246,11 +406,14 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 | `ntc_10k` | Sensor | NTC thermistor - converts to Celsius (B=3950) |
 | `ldr` | Sensor | Light-dependent resistor - rough lux estimate |
 | `internal_temp` | Sensor | ESP32 chip temperature (no pin, virtual) |
+| `clock_hour` | Sensor | Current hour 0-23 via NTP (no pin, virtual) |
+| `clock_minute` | Sensor | Current minute 0-59 via NTP (no pin, virtual) |
+| `clock_hhmm` | Sensor | Time as hour\*100+minute, e.g. 1830 = 18:30 (no pin, virtual) |
 | `digital_out` | Actuator | `digitalWrite()` - HIGH or LOW |
 | `relay` | Actuator | `digitalWrite()` with optional inverted logic |
 | `pwm` | Actuator | `analogWrite()` - 0-255 |
 
-`chip_temp` is auto-registered on first boot. All other devices are registered through conversation with the AI.
+`chip_temp`, `clock_hour`, `clock_minute`, and `clock_hhmm` are auto-registered on first boot. All other devices are registered through conversation with the AI.
 
 Devices persist to `/devices.json` on flash.
 
@@ -267,13 +430,13 @@ Rules monitor a sensor, evaluate a condition, and trigger an action - all in the
 | `eq` | Sensor reading == threshold |
 | `neq` | Sensor reading != threshold |
 | `change` | Sensor reading changed since last check |
-| `always` | Always fire (useful with intervals) |
+| `always` | Fire every interval (periodic) |
 
 ### Sensor Sources
 
 Rules need a sensor to monitor. Two options:
 
-- **Named sensor** (`sensor_name`) - a device from the registry (e.g. `chip_temp`, or any registered sensor). Preferred.
+- **Named sensor** (`sensor_name`) - a device from the registry (e.g. `chip_temp`, `clock_hour`, or any registered sensor). Preferred.
 - **Raw GPIO pin** (`sensor_pin`) - reads a GPIO directly. Set `sensor_analog=true` for `analogRead()` (0-4095), otherwise `digitalRead()` (0/1).
 
 Multiple rules monitoring the same named sensor see the exact same reading per evaluation cycle (cached internally).
@@ -287,8 +450,8 @@ Each rule has an **on action** (fires when condition becomes true) and an option
 | `actuator` | `actuator_name` | Set a registered actuator on/off by device name. Simplest option - just provide the actuator name and the rule handles on=1/off=0 automatically. |
 | `led_set` | `on_r`, `on_g`, `on_b` (0-255) | Set the onboard RGB LED color. |
 | `gpio_write` | `on_pin`, `on_value` (0 or 1) | Write a raw GPIO pin HIGH/LOW. |
-| `nats_publish` | `on_nats_subject`, `on_nats_payload` | Publish a message to a NATS subject. |
-| `telegram` | `on_telegram_message` | Send a Telegram message. Subject to `telegram_cooldown` (default 60s per rule). |
+| `nats_publish` | `on_nats_subject`, `on_nats_payload` | Publish a message to a NATS subject. Supports `{value}` and `{device_name}` interpolation. |
+| `telegram` | `on_telegram_message` | Send a Telegram message. Supports `{value}` and `{device_name}` interpolation. Subject to `telegram_cooldown` (default 60s per rule). |
 
 ### Examples
 
@@ -307,24 +470,69 @@ You just describe what you want in natural language. The AI picks the right para
   off_action=led_set, off_r=0, off_g=255, off_b=0
 
 "Alert me on Telegram when chip_temp goes above 40."
--> on_action=telegram, on_telegram_message="Chip over 40!"
-  off_action=telegram, off_telegram_message="Back to normal."
+-> on_action=telegram, on_telegram_message="Temp is {value}°C - overheating!"
+  off_action=telegram, off_telegram_message="Back to normal at {value}°C."
+
+"Send me a Telegram at 6 PM with the chip temperature."
+-> sensor_name=clock_hhmm, condition=eq, threshold=1800
+  on_action=telegram, on_telegram_message="Evening report: chip is {chip_temp}°C"
+
+"Set LED pink at 8:10 AM."
+-> sensor_name=clock_hhmm, condition=eq, threshold=810
+  on_action=led_set, on_r=255, on_g=105, on_b=180
+
+"Send me a Telegram every 2 minutes."
+-> condition=always, interval_seconds=120
+  on_action=telegram, on_telegram_message="heartbeat"
 ```
 
 ### Behavior
 
-- **Edge-triggered** - fires once on threshold crossing, not repeatedly
+- **Edge-triggered** - conditions `gt`, `lt`, `eq`, `neq`, `change` fire once on threshold crossing, not repeatedly. When the condition clears, the off action runs (if configured).
+- **Periodic** - condition `always` fires every interval, repeatedly. Use for heartbeats, periodic reports, scheduled tasks.
 - **Auto-off** - when using `actuator_name` or `off_action`, the reverse action runs when the condition clears
 - **Interval** - configurable per rule (default 5 seconds)
 - **Telegram cooldown** - per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
+- **Message interpolation** - `{value}` in telegram/NATS messages is replaced with the triggering sensor's reading; `{device_name}` (e.g. `{chip_temp}`) reads any named sensor live at fire time
 - **Sensor caching** - all rules monitoring the same sensor see the same value per evaluation cycle
 - **NATS events** - every rule trigger publishes to `{device_name}.events`
 - **Persistence** - rules survive reboots (`/rules.json`)
 - **IDs** - auto-assigned: `rule_01`, `rule_02`, etc.
 
+## Persistent Memory
+
+The AI persists notes to `/memory.txt` on flash and reloads them into every conversation as a system message. This lets it remember user preferences, device nicknames, and observations across reboots - without using up conversation history slots.
+
+The AI decides autonomously what's worth remembering. Tell it "my favorite color is blue" and it writes that to memory. Ask "set the LED to my favorite color" a week later and it knows what to do.
+
+```
+> /memory
+--- memory (30 bytes) ---
+User's favorite color is blue.
+---
+```
+
+The memory file is limited to 512 characters. The AI is instructed to keep it concise. You can also read or write `/memory.txt` directly using the `file_read` and `file_write` tools, or upload it with `pio run -t uploadfs`.
+
+## Local LLM
+
+By default WireClaw uses [OpenRouter](https://openrouter.ai/) (cloud, HTTPS). Set `api_base_url` to point to a local LLM server instead - no internet or API key required.
+
+```json
+{
+  "api_base_url": "http://192.168.1.50:11434/v1/chat/completions",
+  "model": "qwen2.5:7b",
+  "api_key": ""
+}
+```
+
+HTTP mode skips TLS, saving significant RAM during LLM calls. The server must support OpenAI-compatible chat completions with tool calling.
+
+Works with [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggerganov/llama.cpp) server, or any OpenAI-compatible endpoint. Leave `api_base_url` empty to use OpenRouter.
+
 ## LLM Tools
 
-17 tools available to the AI:
+18 tools available to the AI:
 
 | Tool | Description |
 |------|-------------|
@@ -349,6 +557,7 @@ You just describe what you want in natural language. The AI picks the right para
 | `file_read` | Read a file from LittleFS |
 | `file_write` | Write a file to LittleFS |
 | `nats_publish` | Publish to a NATS subject |
+| `remote_chat` | Send a message to another WireClaw device via NATS |
 
 ## Serial Commands
 
@@ -357,6 +566,8 @@ You just describe what you want in natural language. The AI picks the right para
 | `/status` | Device status (WiFi, heap, NATS, uptime) |
 | `/devices` | List registered devices with readings |
 | `/rules` | List automation rules with status |
+| `/memory` | Show AI persistent memory |
+| `/time` | Show current time and timezone |
 | `/config` | Show loaded configuration |
 | `/prompt` | Show system prompt |
 | `/history` | Show conversation history |
@@ -373,7 +584,7 @@ When `nats_host` is configured, the device subscribes to:
 | Subject | Description |
 |---------|-------------|
 | `{device_name}.chat` | Request/reply - send a message, get LLM response |
-| `{device_name}.cmd` | Commands: status, clear, heap, debug, devices, rules, reboot |
+| `{device_name}.cmd` | Commands: status, clear, heap, debug, devices, rules, memory, time, reboot |
 | `{device_name}.events` | Published events: online, rule triggers, chat responses |
 
 Rule triggers automatically publish events:
@@ -381,6 +592,22 @@ Rule triggers automatically publish events:
 ```json
 {"event":"rule","rule":"cool down","state":"on","reading":29,"threshold":28}
 ```
+
+### Multi-Device Communication
+
+Devices on the same NATS server can talk to each other. The AI on one device uses `remote_chat` to send a message to another device's agentic loop and get a response back:
+
+```
+You (on wireclaw-01): "Ask garden-node what its soil moisture is."
+
+AI calls: remote_chat(device="garden-node", message="What is your soil moisture reading?")
+
+garden-node processes the request, reads its sensor, replies.
+
+AI: "Garden-node reports soil moisture at 42%."
+```
+
+Each device needs a unique `device_name` and the same `nats_host`. The request times out after 30 seconds if the target device is offline.
 
 ```bash
 # Watch rule events
@@ -399,16 +626,28 @@ nats req wireclaw-01.cmd "rules"
 |-------|-------------|
 | `wifi_ssid` | WiFi network name |
 | `wifi_pass` | WiFi password |
-| `api_key` | [OpenRouter](https://openrouter.ai/) API key |
-| `model` | LLM model (e.g. `openai/gpt-4o-mini`) |
+| `api_key` | [OpenRouter](https://openrouter.ai/) API key (empty if using local LLM) |
+| `model` | LLM model (e.g. `openai/gpt-4o-mini`, `qwen2.5:7b`) |
 | `device_name` | Device name, used as NATS subject prefix |
+| `api_base_url` | LLM endpoint URL (empty = OpenRouter, `http://...` for local LLM) |
 | `nats_host` | NATS server hostname (empty = disabled) |
 | `nats_port` | NATS server port (default: 4222) |
 | `telegram_token` | Telegram bot token from [@BotFather](https://t.me/BotFather) (empty = disabled) |
 | `telegram_chat_id` | Allowed Telegram chat ID |
 | `telegram_cooldown` | Minimum seconds between Telegram messages per rule (default: 60, 0 = disabled) |
+| `timezone` | POSIX TZ string for NTP time sync (default: `UTC0`) |
 
 Edit `data/system_prompt.txt` to customize the AI's personality and instructions.
+
+### Timezone Examples
+
+| Region | TZ String |
+|--------|-----------|
+| UTC | `UTC0` |
+| Central Europe (with DST) | `CET-1CEST,M3.5.0,M10.5.0/3` |
+| US Eastern (with DST) | `EST5EDT,M3.2.0,M11.1.0` |
+| US Pacific (with DST) | `PST8PDT,M3.2.0,M11.1.0` |
+| Japan | `JST-9` |
 
 ### Runtime Data
 
@@ -419,15 +658,16 @@ Created automatically on flash, persisted across reboots:
 | `/devices.json` | Registered sensors and actuators |
 | `/rules.json` | Automation rules |
 | `/history.json` | Conversation history (6 turns) |
+| `/memory.txt` | AI persistent memory (preferences, notes) |
 
 ## Resource Usage
 
 ```
-RAM:   48.9% (160KB of 320KB)
-Flash: 36.2% (1.2MB of 3.3MB)
+RAM:   51.1% (167KB of 320KB)
+Flash: 36.6% (1.2MB of 3.3MB)
 ```
 
-Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (12KB), conversation history, TLS stack.
+Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (12KB), conversation history, persistent memory (512B), TLS stack.
 
 ## License
 

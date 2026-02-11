@@ -23,6 +23,9 @@ enum DeviceKind {
     DEV_SENSOR_NTC_10K,         /* analogRead(pin) -> C via Steinhart-Hart */
     DEV_SENSOR_LDR,             /* analogRead(pin) -> lux estimate */
     DEV_SENSOR_INTERNAL_TEMP,   /* temperature_sensor_get_celsius() -> C */
+    DEV_SENSOR_CLOCK_HOUR,      /* getLocalTime() -> 0-23 */
+    DEV_SENSOR_CLOCK_MINUTE,    /* getLocalTime() -> 0-59 */
+    DEV_SENSOR_CLOCK_HHMM,     /* getLocalTime() -> hour*100+minute (e.g. 1830) */
     /* Actuators */
     DEV_ACTUATOR_DIGITAL,       /* digitalWrite */
     DEV_ACTUATOR_RELAY,         /* digitalWrite (inverted flag) */

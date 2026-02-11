@@ -153,6 +153,7 @@ const char *ruleCreate(const char *name, const char *sensor_name, uint8_t sensor
 
     r->fired = false;
     r->last_eval = 0;
+    r->last_triggered = 0;
     r->last_reading = 0;
     r->enabled = true;
     r->used = true;
@@ -180,6 +181,51 @@ bool ruleEnable(const char *id, bool enable) {
     r->enabled = enable;
     r->fired = false; /* Reset triggered state when toggling */
     return true;
+}
+
+/*============================================================================
+ * Message Interpolation — {value} and {device_name} substitution
+ *============================================================================*/
+
+static void interpolateMessage(const char *tmpl, const Rule *r,
+                                char *out, int out_len) {
+    int w = 0;
+    const char *p = tmpl;
+    while (*p && w < out_len - 1) {
+        if (*p == '{') {
+            const char *end = strchr(p, '}');
+            if (end && end - p - 1 < DEV_NAME_LEN) {
+                char varname[DEV_NAME_LEN];
+                int vlen = end - p - 1;
+                memcpy(varname, p + 1, vlen);
+                varname[vlen] = '\0';
+
+                float val;
+                bool found = false;
+                if (strcmp(varname, "value") == 0) {
+                    val = (float)r->last_reading;
+                    found = true;
+                } else {
+                    Device *dev = deviceFind(varname);
+                    if (dev && deviceIsSensor(dev->kind)) {
+                        val = deviceReadSensor(dev);
+                        found = true;
+                    }
+                }
+
+                if (found) {
+                    if (val == (int)val)
+                        w += snprintf(out + w, out_len - w, "%d", (int)val);
+                    else
+                        w += snprintf(out + w, out_len - w, "%.1f", val);
+                    p = end + 1;
+                    continue;
+                }
+            }
+        }
+        out[w++] = *p++;
+    }
+    out[w] = '\0';
 }
 
 /*============================================================================
@@ -212,8 +258,12 @@ static void executeAction(Rule *r, bool is_on) {
             if (!g_nats_connected) break;
             const char *subj = is_on ? r->on_nats_subj : r->off_nats_subj;
             const char *pay = is_on ? r->on_nats_pay : r->off_nats_pay;
-            if (subj[0]) natsClient.publish(subj, pay);
-            if (g_debug) Serial.printf("[Rule] %s: NATS %s: %s\n", r->id, subj, pay);
+            if (subj[0]) {
+                static char interpolated[128];
+                interpolateMessage(pay, r, interpolated, sizeof(interpolated));
+                natsClient.publish(subj, interpolated);
+                if (g_debug) Serial.printf("[Rule] %s: NATS %s: %s\n", r->id, subj, interpolated);
+            }
             break;
         }
         case ACT_ACTUATOR: {
@@ -236,9 +286,11 @@ static void executeAction(Rule *r, bool is_on) {
             }
             const char *msg = is_on ? r->on_nats_pay : r->off_nats_pay;
             if (msg[0]) {
-                tgSendMessage(msg);
+                static char interpolated[128];
+                interpolateMessage(msg, r, interpolated, sizeof(interpolated));
+                tgSendMessage(interpolated);
                 r->last_telegram_ms = now;
-                if (g_debug) Serial.printf("[Rule] %s: Telegram: %s\n", r->id, msg);
+                if (g_debug) Serial.printf("[Rule] %s: Telegram: %s\n", r->id, interpolated);
             }
             break;
         }
@@ -327,15 +379,25 @@ void rulesEvaluate() {
             case COND_ALWAYS: condition_met = true; break;
         }
 
+        /* COND_ALWAYS: periodic fire every interval (no edge-triggering) */
+        if (r->condition == COND_ALWAYS) {
+            executeAction(r, true);
+            r->last_triggered = now;
+            publishRuleEvent(r, true);
+            if (g_debug) Serial.printf("[Rule] %s '%s' PERIODIC (reading=%d)\n",
+                                       r->id, r->name, (int)r->last_reading);
+        }
         /* Edge-triggered: fire on transition */
-        if (condition_met && !r->fired) {
+        else if (condition_met && !r->fired) {
             r->fired = true;
+            r->last_triggered = now;
             executeAction(r, true);
             publishRuleEvent(r, true);
             Serial.printf("[Rule] %s '%s' TRIGGERED (reading=%d, threshold=%d)\n",
                           r->id, r->name, (int)r->last_reading, (int)r->threshold);
         } else if (!condition_met && r->fired) {
             r->fired = false;
+            r->last_triggered = now;
             if (r->has_off_action) {
                 executeAction(r, false);
             }
@@ -413,7 +475,7 @@ void rulesSave() {
             "\"ons\":\"%s\",\"onp\":\"%s\","
             "\"ho\":%s,\"fa\":\"%s\",\"fac\":\"%s\",\"fp\":%d,\"fv\":%d,"
             "\"fns\":\"%s\",\"fnp\":\"%s\","
-            "\"en\":%s}",
+            "\"en\":%s,\"lt\":%u}",
             r->id, r->name, r->sensor_name, r->sensor_pin,
             r->sensor_analog ? "true" : "false",
             conditionOpName(r->condition), (int)r->threshold, (unsigned)r->interval_ms,
@@ -422,7 +484,8 @@ void rulesSave() {
             r->has_off_action ? "true" : "false",
             actionTypeName(r->off_action), r->off_actuator, r->off_pin, (int)r->off_value,
             r->off_nats_subj, r->off_nats_pay,
-            r->enabled ? "true" : "false");
+            r->enabled ? "true" : "false",
+            (unsigned)r->last_triggered);
 
         if (w >= (int)sizeof(buf) - 1) break;
     }
@@ -501,6 +564,7 @@ static void rulesLoad() {
         ruleJsonGetString(objBuf, "fnp", r->off_nats_pay, RULE_NATS_PAY_LEN);
 
         r->enabled = ruleJsonGetBool(objBuf, "en", true);
+        r->last_triggered = (uint32_t)ruleJsonGetInt(objBuf, "lt", 0);
         r->fired = false;
         r->last_eval = 0;
         r->last_reading = 0;

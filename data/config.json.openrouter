@@ -1,0 +1,14 @@
+{
+  "wifi_ssid": "Ahausnetz2",
+  "wifi_pass": "WdPnwhk(sfg12);2",
+  "api_key": "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",
+  "model": "openai/gpt-4o-mini",
+  "device_name": "esp-claw-01",
+  "max_tokens": 2048,
+  "temperature": 0.7,
+  "nats_host": "192.168.178.35",
+  "nats_port": "4222",
+  "telegram_token": "8193946304:AAG8RpwYcLaFTicqXHk7pcK_o0dzUY4TnMw",
+  "telegram_chat_id": "1456274331",
+  "telegram_cooldown": "15"
+}

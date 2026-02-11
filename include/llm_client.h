@@ -10,6 +10,7 @@
 #define LLM_CLIENT_H
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 
 /* Global debug flag - toggled via /debug serial command */
@@ -19,7 +20,7 @@ extern bool g_debug;
 #define LLM_MAX_RESPONSE_LEN   4096  /* Max content we extract from response */
 #define LLM_MAX_REQUEST_LEN    12288 /* Max JSON request body */
 #define LLM_READ_TIMEOUT_MS    30000 /* 30s read timeout for LLM response */
-#define LLM_MAX_MESSAGES       24    /* Max messages in conversation (more for tool loops) */
+#define LLM_MAX_MESSAGES       26    /* Max messages in conversation (more for tool loops) */
 #define LLM_MAX_TOOL_CALLS     4     /* Max tool calls per LLM response */
 
 /* A single tool call parsed from LLM response */
@@ -64,7 +65,7 @@ class LlmClient {
 public:
     LlmClient();
 
-    void begin(const char *api_key, const char *model);
+    void begin(const char *api_key, const char *model, const char *base_url = nullptr);
 
     /**
      * Send a chat completion request, optionally with tools.
@@ -81,9 +82,15 @@ public:
     const char *lastError() const { return m_error; }
 
 private:
-    WiFiClientSecure m_client;
+    WiFiClientSecure m_secure_client;
+    WiFiClient       m_plain_client;
+    Client          *m_client;          /* points to active one */
     const char *m_api_key;
     const char *m_model;
+    char m_host[64];
+    int  m_port;
+    char m_path[64];
+    bool m_use_tls;
     char m_error[128];
 
     int buildRequest(char *buf, int buf_len,
