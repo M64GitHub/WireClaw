@@ -18,8 +18,8 @@ extern bool g_debug;
 
 /* Maximum sizes */
 #define LLM_MAX_RESPONSE_LEN   4096  /* Max content we extract from response */
-#define LLM_MAX_REQUEST_LEN    12288 /* Max JSON request body */
-#define LLM_READ_TIMEOUT_MS    30000 /* 30s read timeout for LLM response */
+#define LLM_MAX_REQUEST_LEN    20480 /* Max JSON request body */
+#define LLM_READ_TIMEOUT_MS    120000 /* 120s read timeout for LLM response */
 #define LLM_MAX_MESSAGES       26    /* Max messages in conversation (more for tool loops) */
 #define LLM_MAX_TOOL_CALLS     4     /* Max tool calls per LLM response */
 
@@ -27,7 +27,7 @@ extern bool g_debug;
 struct LlmToolCall {
     char id[64];           /* "call_abc123" */
     char name[32];         /* "led_set" */
-    char arguments[512];   /* Raw JSON: "{\"r\":255,\"g\":0,\"b\":0}" */
+    char arguments[1024];  /* Raw JSON: "{\"r\":255,\"g\":0,\"b\":0}" */
 };
 
 /* Message types for the agentic loop */

@@ -399,10 +399,12 @@ const char *chatWithLLM(const char *userMessage) {
     }
 
     /* History */
+    int histStart = msgCount;  /* index where history pairs begin */
     for (int i = 0; i < historyCount && msgCount < LLM_MAX_MESSAGES - 2; i++) {
         messages[msgCount++] = llmMsg("user", history[i].user);
         messages[msgCount++] = llmMsg("assistant", history[i].assistant);
     }
+    int histEnd = msgCount;    /* index after last history message */
 
     /* Current user message */
     messages[msgCount++] = llmMsg("user", userMessage);
@@ -419,6 +421,18 @@ const char *chatWithLLM(const char *userMessage) {
 
     for (int iter = 0; iter < MAX_AGENT_ITERATIONS; iter++) {
         ok = llm.chat(messages, msgCount, tools_json, &result);
+
+        /* If request too large, drop oldest history pair and retry */
+        while (!ok && strstr(llm.lastError(), "too large") &&
+               histStart + 2 <= histEnd) {
+            Serial.printf("[Agent] Request too large, dropping oldest history\n");
+            /* Remove 2 messages (user+assistant) at histStart */
+            memmove(&messages[histStart], &messages[histStart + 2],
+                    (msgCount - histStart - 2) * sizeof(LlmMessage));
+            msgCount -= 2;
+            histEnd -= 2;
+            ok = llm.chat(messages, msgCount, tools_json, &result);
+        }
         if (!ok) break;
 
         totalPromptTokens += result.prompt_tokens;

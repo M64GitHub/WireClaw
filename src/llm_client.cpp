@@ -5,6 +5,7 @@
 
 #include "llm_client.h"
 #include <WiFiClientSecure.h>
+#include <esp_task_wdt.h>
 
 /* Default OpenRouter API endpoint */
 static const char *DEFAULT_HOST = "openrouter.ai";
@@ -487,29 +488,26 @@ int LlmClient::readResponse(char *buf, int buf_len) {
     if (g_debug) Serial.printf("[LLM] content_length=%d chunked=%d\n", content_length, chunked);
 
     int total = 0;
+    int target = (content_length > 0 && !chunked)
+                 ? (content_length < buf_len - 1 ? content_length : buf_len - 1)
+                 : buf_len - 1;
 
-    if (content_length > 0 && !chunked) {
-        int to_read = content_length < (buf_len - 1) ?
-                      content_length : (buf_len - 1);
-        total = m_client->readBytes(buf, to_read);
-    } else {
-        unsigned long last_data = millis();
-        while (total < buf_len - 1) {
-            int avail = m_client->available();
-            if (avail > 0) {
-                int to_read = avail < (buf_len - 1 - total) ?
-                              avail : (buf_len - 1 - total);
-                int rd = m_client->readBytes(buf + total, to_read);
-                total += rd;
-                last_data = millis();
-            } else if (!m_client->connected()) {
-                break;
-            } else if (millis() - last_data > 10000) {
-                if (g_debug) Serial.printf("[LLM] Read timeout after %d bytes\n", total);
-                break;
-            } else {
-                delay(10);
-            }
+    unsigned long last_data = millis();
+    while (total < target) {
+        esp_task_wdt_reset();
+        int avail = m_client->available();
+        if (avail > 0) {
+            int to_read = avail < (target - total) ? avail : (target - total);
+            int rd = m_client->readBytes(buf + total, to_read);
+            total += rd;
+            last_data = millis();
+        } else if (!m_client->connected()) {
+            break;
+        } else if (millis() - last_data > 10000) {
+            if (g_debug) Serial.printf("[LLM] Read timeout after %d bytes\n", total);
+            break;
+        } else {
+            delay(10);
         }
     }
 
@@ -559,6 +557,7 @@ bool LlmClient::chat(const LlmMessage *messages, int count,
 
     unsigned long wait_start = millis();
     while (!m_client->available()) {
+        esp_task_wdt_reset();
         if (millis() - wait_start > LLM_READ_TIMEOUT_MS) {
             snprintf(m_error, sizeof(m_error), "Response timeout (%ds)",
                      LLM_READ_TIMEOUT_MS / 1000);

@@ -521,10 +521,12 @@ By default WireClaw uses [OpenRouter](https://openrouter.ai/) (cloud, HTTPS). Se
 ```json
 {
   "api_base_url": "http://192.168.1.50:11434/v1/chat/completions",
-  "model": "qwen2.5:7b",
+  "model": "gpt-oss:latest",
   "api_key": ""
 }
 ```
+
+**Recommended local model:** [gpt-oss](https://ollama.com/library/gpt-oss) (OpenAI's open-weight model) — it has native tool calling support and handles WireClaw's 18-tool schema reliably. The `:latest` tag (20B, 13GB) is a good balance of speed and quality. [Qwen3](https://ollama.com/library/qwen3) models also work well.
 
 HTTP mode skips TLS, saving significant RAM during LLM calls. The server must support OpenAI-compatible chat completions with tool calling.
 
@@ -627,7 +629,7 @@ nats req wireclaw-01.cmd "rules"
 | `wifi_ssid` | WiFi network name |
 | `wifi_pass` | WiFi password |
 | `api_key` | [OpenRouter](https://openrouter.ai/) API key (empty if using local LLM) |
-| `model` | LLM model (e.g. `openai/gpt-4o-mini`, `qwen2.5:7b`) |
+| `model` | LLM model (e.g. `openai/gpt-4o-mini`, `gpt-oss:latest`) |
 | `device_name` | Device name, used as NATS subject prefix |
 | `api_base_url` | LLM endpoint URL (empty = OpenRouter, `http://...` for local LLM) |
 | `nats_host` | NATS server hostname (empty = disabled) |
@@ -663,11 +665,11 @@ Created automatically on flash, persisted across reboots:
 ## Resource Usage
 
 ```
-RAM:   51.1% (167KB of 320KB)
-Flash: 36.6% (1.2MB of 3.3MB)
+RAM:   53.6% (176KB of 320KB)
+Flash: 36.5% (1.2MB of 3.3MB)
 ```
 
-Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (12KB), conversation history, persistent memory (512B), TLS stack.
+Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (20KB), conversation history, persistent memory (512B), TLS stack.
 
 ## License
 

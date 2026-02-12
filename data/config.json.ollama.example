@@ -1,0 +1,15 @@
+{
+  "wifi_ssid": "A2",
+  "wifi_pass": "W;2",
+  "api_key": "",
+  "model": "gpt-oss:latest",
+  "device_name": "esp-claw-01",
+  "api_base_url": "http://192.168.178.35:11434/v1/chat/completions",
+  "max_tokens": 2048,
+  "temperature": 0.7,
+  "nats_host": "192.168.178.35",
+  "nats_port": "4222",
+  "telegram_token": "8nMw",
+  "telegram_chat_id": "1331",
+  "telegram_cooldown": "15"
+}
