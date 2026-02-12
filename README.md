@@ -594,7 +594,7 @@ By default WireClaw uses [OpenRouter](https://openrouter.ai/) (cloud, HTTPS). Se
 }
 ```
 
-**Recommended local model:** [gpt-oss](https://ollama.com/library/gpt-oss) (OpenAI's open-weight model) — it has native tool calling support and handles WireClaw's 18-tool schema reliably. The `:latest` tag (20B, 13GB) is a good balance of speed and quality. [Qwen3](https://ollama.com/library/qwen3) models also work well.
+**Recommended local model:** [gpt-oss](https://ollama.com/library/gpt-oss) (OpenAI's open-weight model) - it has native tool calling support and handles WireClaw's 18-tool schema reliably. The `:latest` tag (20B, 13GB) is a good balance of speed and quality. [Qwen3](https://ollama.com/library/qwen3) models also work well.
 
 HTTP mode skips TLS, saving significant RAM during LLM calls. The server must support OpenAI-compatible chat completions with tool calling.
 
