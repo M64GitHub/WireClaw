@@ -2,7 +2,9 @@
 
 An AI agent that lives on a $5 microcontroller and controls real hardware.
 
-**[Flash it to your ESP32 from the browser](https://wireclaw.io/flash.html)** - no tools to install, configure from your phone.
+**Supported chips:** ESP32-C6, ESP32-S3, ESP32-C3 (4 MB flash required)
+
+**[Flash it to your ESP32 from the browser](https://wireclaw.io/flash.html)** - no tools to install, configure from your phone. The web flasher auto-detects your chip.
 
 Tell it what you want in plain language - over Telegram, serial, or NATS - and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI. It remembers your preferences across reboots, knows what time it is, and can talk to other WireClaw devices on the network.
 
@@ -411,8 +413,7 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 
 ## Hardware
 
-- **Tested on:** ESP32-C6 (WaveShare DevKit, 8MB flash)
-- **Compatible:** Any ESP32 with WiFi (C3, C6, S3, S2, classic ESP32)
+- **Supported:** ESP32-C6, ESP32-S3, ESP32-C3
 - **Platform:** [pioarduino](https://github.com/pioarduino/platform-espressif32) via PlatformIO
 - **Requirements:** WiFi network, [OpenRouter](https://openrouter.ai/) API key or local LLM server
 
@@ -421,6 +422,8 @@ Onboard RGB LED control works out of the box on Espressif DevKit boards with WS2
 The dev board alone is enough to get started - chip temperature sensor, clock sensors, and RGB LED work out of the box. Add external sensors and actuators as needed.
 
 ## Quick Start
+
+**4 MB flash required** - smaller chips do not work with the OTA partition table and web installer.
 
 ### Option A: Setup Portal (no CLI needed)
 
@@ -477,11 +480,21 @@ For a local LLM: set `api_base_url` to your server's OpenAI-compatible endpoint,
 
 #### 3. Build and Flash
 
+The default target is ESP32-C6. To build for a different chip, pass `-e <target>`:
+
+| Target | Board | Command |
+|--------|-------|---------|
+| ESP32-C6 | esp32-c6-devkitc-1 | `pio run` (default) |
+| ESP32-S3 | esp32-s3-devkitc-1 | `pio run -e esp32-s3` |
+| ESP32-C3 | esp32-c3-devkitm-1 | `pio run -e esp32-c3` |
+
 ```
 pio run -t uploadfs    # upload config + system prompt to filesystem
 pio run -t upload      # flash firmware
 pio device monitor     # connect via serial (115200 baud)
 ```
+
+For non-default targets, add `-e <target>` to each command (e.g. `pio run -e esp32-s3 -t upload`).
 
 Type a message and press Enter. Or open Telegram and text your bot.
 

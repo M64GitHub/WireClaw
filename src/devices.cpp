@@ -6,11 +6,11 @@
 #include "devices.h"
 #include "llm_client.h"
 #include <LittleFS.h>
+#if !defined(CONFIG_IDF_TARGET_ESP32)
 #include "driver/temperature_sensor.h"
-#include <math.h>
-
-/* External: temperature sensor handle from main.cpp */
 extern temperature_sensor_handle_t g_temp_sensor;
+#endif
+#include <math.h>
 extern bool g_debug;
 
 static Device g_devices[MAX_DEVICES];
@@ -164,8 +164,10 @@ float deviceReadSensor(const Device *dev) {
 
         case DEV_SENSOR_INTERNAL_TEMP: {
             float t = 0.0f;
+#if !defined(CONFIG_IDF_TARGET_ESP32)
             if (g_temp_sensor)
                 temperature_sensor_get_celsius(g_temp_sensor, &t);
+#endif
             return t;
         }
 

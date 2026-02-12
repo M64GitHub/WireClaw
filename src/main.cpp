@@ -13,7 +13,9 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
+#if !defined(CONFIG_IDF_TARGET_ESP32)
 #include "driver/temperature_sensor.h"
+#endif
 #include "llm_client.h"
 #include "tools.h"
 #include "devices.h"
@@ -64,7 +66,7 @@ static void configDefaults() {
 }
 
 /*============================================================================
- * LED Helpers (WaveShare ESP32-C6 has GRB swap)
+ * LED Helpers (RGB on C6/S3/C3, on/off fallback on classic ESP32)
  *============================================================================*/
 
 static uint8_t ledBrightness = LED_BRIGHTNESS;
@@ -74,7 +76,10 @@ void led(uint8_t r, uint8_t g, uint8_t b) {
     g = (uint8_t)((g * ledBrightness) / 255);
     b = (uint8_t)((b * ledBrightness) / 255);
 #ifdef RGB_BUILTIN
-    rgbLedWrite(RGB_BUILTIN, g, r, b);
+    rgbLedWrite(RGB_BUILTIN, r, g, b);
+#elif defined(LED_BUILTIN)
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, (r || g || b) ? HIGH : LOW);
 #endif
 }
 
@@ -189,7 +194,9 @@ static bool loadConfig() {
 
 bool g_debug = false;
 bool g_led_user = false; /* true when LED was set by a tool - don't overwrite with status */
+#if !defined(CONFIG_IDF_TARGET_ESP32)
 temperature_sensor_handle_t g_temp_sensor = NULL;
+#endif
 
 LlmClient llm;
 char serialBuf[SERIAL_BUF_SIZE];
@@ -325,6 +332,7 @@ static void historyLoad() {
  * Temperature Sensor
  *============================================================================*/
 
+#if !defined(CONFIG_IDF_TARGET_ESP32)
 void initTempSensor() {
     temperature_sensor_config_t config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
     esp_err_t err = temperature_sensor_install(&config, &g_temp_sensor);
@@ -332,6 +340,7 @@ void initTempSensor() {
     err = temperature_sensor_enable(g_temp_sensor);
     if (err != ESP_OK) { Serial.printf("Temp sensor enable failed: %d\n", err); }
 }
+#endif
 
 /*============================================================================
  * WiFi
@@ -1377,13 +1386,15 @@ void setup() {
     historyLoad();
     Serial.printf("Model: %s\n", cfg_model);
 
-    /* Initialize temperature sensor */
+    /* Initialize temperature sensor (not available on classic ESP32) */
+#if !defined(CONFIG_IDF_TARGET_ESP32)
     initTempSensor();
     if (g_temp_sensor) {
         float temp = 0.0f;
         temperature_sensor_get_celsius(g_temp_sensor, &temp);
         Serial.printf("Chip temp: %.1f C\n", temp);
     }
+#endif
 
     /* Initialize device registry and rule engine */
     devicesInit();

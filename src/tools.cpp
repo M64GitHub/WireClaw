@@ -9,10 +9,13 @@
 #include "rules.h"
 #include <Arduino.h>
 #include <WiFi.h>
+#include "soc/soc_caps.h"
 #include <LittleFS.h>
 #include <nats_atoms.h>
 #include <esp_task_wdt.h>
+#if !defined(CONFIG_IDF_TARGET_ESP32)
 #include "driver/temperature_sensor.h"
+#endif
 
 /* Forward declarations (defined in main.cpp) */
 extern void led(uint8_t r, uint8_t g, uint8_t b);
@@ -21,7 +24,9 @@ extern bool g_led_user;
 extern NatsClient natsClient;
 extern bool g_nats_connected;
 extern bool g_nats_enabled;
+#if !defined(CONFIG_IDF_TARGET_ESP32)
 extern temperature_sensor_handle_t g_temp_sensor;
+#endif
 
 /* NATS virtual sensor helpers (from main.cpp) */
 extern void natsSubscribeDeviceSensors();
@@ -126,8 +131,8 @@ static void tool_gpio_write(const char *args, char *result, int result_len) {
     int pin = jsonArgInt(args, "pin", -1);
     int value = jsonArgInt(args, "value", 0);
 
-    if (pin < 0 || pin > 30) {
-        snprintf(result, result_len, "Error: invalid pin %d (must be 0-30)", pin);
+    if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
+        snprintf(result, result_len, "Error: invalid pin %d (must be 0-%d)", pin, SOC_GPIO_PIN_COUNT - 1);
         return;
     }
 
@@ -139,8 +144,8 @@ static void tool_gpio_write(const char *args, char *result, int result_len) {
 static void tool_gpio_read(const char *args, char *result, int result_len) {
     int pin = jsonArgInt(args, "pin", -1);
 
-    if (pin < 0 || pin > 30) {
-        snprintf(result, result_len, "Error: invalid pin %d (must be 0-30)", pin);
+    if (pin < 0 || pin >= SOC_GPIO_PIN_COUNT) {
+        snprintf(result, result_len, "Error: invalid pin %d (must be 0-%d)", pin, SOC_GPIO_PIN_COUNT - 1);
         return;
     }
 
@@ -244,11 +249,15 @@ static void tool_nats_publish(const char *args, char *result, int result_len) {
 
 static void tool_temperature_read(const char *args, char *result, int result_len) {
     (void)args;
+#if !defined(CONFIG_IDF_TARGET_ESP32)
     float temp = 0.0f;
     if (g_temp_sensor != NULL) {
         temperature_sensor_get_celsius(g_temp_sensor, &temp);
     }
     snprintf(result, result_len, "Chip temperature: %.1f C", temp);
+#else
+    snprintf(result, result_len, "Error: temperature sensor not available on this chip");
+#endif
 }
 
 /*============================================================================
