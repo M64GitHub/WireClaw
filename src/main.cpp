@@ -623,11 +623,15 @@ static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
     } else if (strcmp(cmdBuf, "devices") == 0) {
         int w = 0;
         const Device *devs = deviceGetAll();
-        for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(responseBuf) - 60; i++) {
+        for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(responseBuf) - 80; i++) {
             if (!devs[i].used) continue;
             const Device *d = &devs[i];
             if (w > 0) w += snprintf(responseBuf + w, sizeof(responseBuf) - w, "; ");
-            if (deviceIsSensor(d->kind)) {
+            if (d->kind == DEV_SENSOR_NATS_VALUE) {
+                float val = deviceReadSensor(d);
+                w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
+                             "%s[%s]=%.1f%s", d->name, d->nats_subject, val, d->unit);
+            } else if (deviceIsSensor(d->kind)) {
                 float val = deviceReadSensor(d);
                 w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
                              "%s=%.1f%s", d->name, val, d->unit);
@@ -693,6 +697,59 @@ static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
     }
 }
 
+/*============================================================================
+ * NATS Virtual Sensor Subscriptions
+ *============================================================================*/
+
+static void onNatsValue(nats_client_t *client, const nats_msg_t *msg,
+                        void *userdata) {
+    (void)client;
+    Device *dev = (Device *)userdata;
+    if (!dev || !dev->used) return;
+    parseNatsPayload(msg->data, msg->data_len,
+                     &dev->nats_value, dev->nats_msg, sizeof(dev->nats_msg));
+    if (g_debug) Serial.printf("[NATS] %s = %.1f (msg='%s')\n",
+                               dev->name, dev->nats_value, dev->nats_msg);
+}
+
+void natsSubscribeDeviceSensors() {
+    if (!g_nats_connected) return;
+    Device *devs = deviceGetAllMutable();
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        if (!devs[i].used) continue;
+        if (devs[i].kind != DEV_SENSOR_NATS_VALUE) continue;
+        if (devs[i].nats_subject[0] == '\0') continue;
+        if (devs[i].nats_sid != 0) continue; /* already subscribed */
+        uint16_t sid = 0;
+        nats_err_t err = natsClient.subscribe(devs[i].nats_subject,
+                                              onNatsValue, &devs[i], &sid);
+        if (err == NATS_OK) {
+            devs[i].nats_sid = sid;
+            Serial.printf("[NATS] Subscribed '%s' -> %s (sid=%d)\n",
+                          devs[i].name, devs[i].nats_subject, sid);
+        } else {
+            Serial.printf("[NATS] Subscribe '%s' failed: %s\n",
+                          devs[i].nats_subject, nats_err_str(err));
+        }
+    }
+}
+
+void natsUnsubscribeDevice(const char *name) {
+    if (!g_nats_connected) return;
+    Device *devs = deviceGetAllMutable();
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        if (!devs[i].used) continue;
+        if (strcmp(devs[i].name, name) != 0) continue;
+        if (devs[i].nats_sid != 0) {
+            natsClient.unsubscribe(devs[i].nats_sid);
+            Serial.printf("[NATS] Unsubscribed '%s' (sid=%d)\n",
+                          name, devs[i].nats_sid);
+            devs[i].nats_sid = 0;
+        }
+        break;
+    }
+}
+
 /**
  * Build NATS subject strings from device_name prefix.
  */
@@ -740,6 +797,10 @@ static bool connectNats() {
     natsClient.publish(natsSubjectEvents, onlineMsg);
 
     Serial.printf("NATS: subscribed to %s, %s\n", natsSubjectChat, natsSubjectCmd);
+
+    /* Subscribe NATS virtual sensors */
+    natsSubscribeDeviceSensors();
+
     return true;
 }
 
@@ -1197,7 +1258,11 @@ void handleSerialCommand(const char *input) {
         for (int i = 0; i < MAX_DEVICES; i++) {
             if (!devs[i].used) continue;
             const Device *d = &devs[i];
-            if (deviceIsSensor(d->kind)) {
+            if (d->kind == DEV_SENSOR_NATS_VALUE) {
+                float val = deviceReadSensor(d);
+                Serial.printf("  %s [nats_value] nats=%s  = %.1f %s\n",
+                              d->name, d->nats_subject, val, d->unit);
+            } else if (deviceIsSensor(d->kind)) {
                 float val = deviceReadSensor(d);
                 Serial.printf("  %s [%s] pin=%d  = %.1f %s\n",
                               d->name, deviceKindName(d->kind), d->pin, val, d->unit);
