@@ -26,6 +26,7 @@ enum DeviceKind {
     DEV_SENSOR_CLOCK_HOUR,      /* getLocalTime() -> 0-23 */
     DEV_SENSOR_CLOCK_MINUTE,    /* getLocalTime() -> 0-59 */
     DEV_SENSOR_CLOCK_HHMM,     /* getLocalTime() -> hour*100+minute (e.g. 1830) */
+    DEV_SENSOR_NATS_VALUE,     /* value received from NATS subject */
     /* Actuators */
     DEV_ACTUATOR_DIGITAL,       /* digitalWrite */
     DEV_ACTUATOR_RELAY,         /* digitalWrite (inverted flag) */
@@ -39,6 +40,11 @@ struct Device {
     char        unit[DEV_UNIT_LEN];
     bool        inverted;
     bool        used;
+    /* NATS virtual sensor fields (only meaningful for DEV_SENSOR_NATS_VALUE) */
+    char        nats_subject[32];
+    float       nats_value;
+    char        nats_msg[64];
+    uint16_t    nats_sid;
 };
 
 /* Initialize device registry - loads from /devices.json, auto-registers chip_temp */
@@ -49,7 +55,8 @@ void devicesSave();
 
 /* Register a new device. Returns true on success. */
 bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
-                    const char *unit, bool inverted);
+                    const char *unit, bool inverted,
+                    const char *nats_subject = nullptr);
 
 /* Remove a device by name. Returns true if found and removed. */
 bool deviceRemove(const char *name);
@@ -74,5 +81,18 @@ const Device *deviceGetAll();
 
 /* Get the kind name as a string */
 const char *deviceKindName(DeviceKind kind);
+
+/* Get mutable device array (for NATS subscription management) */
+Device *deviceGetAllMutable();
+
+/* Set the NATS value + message on a device */
+void deviceSetNatsValue(Device *dev, float value, const char *msg);
+
+/* Get the NATS message string from a device */
+const char *deviceGetNatsMsg(const Device *dev);
+
+/* Parse a NATS payload into value + message */
+void parseNatsPayload(const uint8_t *data, size_t len,
+                      float *out_value, char *out_msg, size_t msg_len);
 
 #endif /* DEVICES_H */

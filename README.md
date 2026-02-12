@@ -84,6 +84,64 @@ Telegram received: "Chip temp: 28.7°C"
 
 Time synced via NTP, the `clock_hhmm` sensor encodes time as hour\*100+minute (1012 = 10:12), and `{chip_temp}` is replaced with the live sensor reading when the rule fires. Schedule-based automation with real data - no LLM involved at runtime.
 
+It can also react to data from other systems on the network:
+
+```
+You (on Telegram):
+    "Register a NATS sensor called room_temp on subject home.room.temp with unit C"
+
+Serial:  device_register({"name":"room_temp","type":"nats_value","subject":"home.room.temp","unit":"C"})
+         [NATS] Subscribed 'room_temp' -> home.room.temp (sid=3)
+         -> Registered nats_value sensor 'room_temp' on subject 'home.room.temp'
+```
+
+Now any system on the NATS network can push values to it:
+
+```bash
+$ nats pub home.room.temp "25.3"
+```
+
+```
+You (on Telegram):  "whats the room temp?"
+
+Serial:  sensor_read({"name":"room_temp"})
+         -> room_temp: 25.3 C
+
+WireClaw: "The current room temperature is 25.3°C."
+```
+
+And you can set up rules on it - same as any other sensor:
+
+```
+You (on Telegram):
+    "please send me a telegram message, when the room temperature reaches 30 degrees"
+
+Serial:  rule_create(sensor_name="room_temp", condition="gt", threshold=30,
+                     on_action="telegram",
+                     on_telegram_message="Room temperature has reached {value}°C.")
+         -> Rule created: rule_01 'Room Temp Alert' - room_temp > 30 (every 5s)
+```
+
+```bash
+$ nats pub home.room.temp "45.3"
+```
+
+```
+Serial:  [Rule] rule_01 'Room Temp Alert' TRIGGERED (reading=45, threshold=30)
+
+Telegram received: "Room temperature has reached 45°C."
+```
+
+```bash
+$ nats pub home.room.temp "25.3"
+```
+
+```
+Serial:  [Rule] rule_01 'Room Temp Alert' CLEARED (reading=25)
+```
+
+Python scripts, Home Assistant, industrial PLCs, other WireClaws - anything that can publish to NATS can feed data into WireClaw's rule engine. The ESP32 handles the reactions: GPIO, LEDs, relays, Telegram alerts.
+
 ## How It Works
 
 WireClaw runs two loops on the ESP32:
@@ -329,6 +387,7 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 - **Local LLM** - use a local server (Ollama, llama.cpp) over HTTP instead of cloud API
 - **Multi-Device Mesh** - devices talk to each other over NATS via `remote_chat`
 - **Telegram Bot** - chat with your ESP32 from your phone
+- **NATS Virtual Sensors** - subscribe to any NATS subject as a sensor, trigger rules from external systems (Python, Home Assistant, PLCs, other WireClaws)
 - **NATS Integration** - device-to-device messaging, commands, and rule-triggered events
 - **Serial Interface** - local chat and commands over USB (115200 baud)
 - **Conversation History** - 6-turn circular buffer, persisted across reboots
@@ -409,6 +468,7 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 | `clock_hour` | Sensor | Current hour 0-23 via NTP (no pin, virtual) |
 | `clock_minute` | Sensor | Current minute 0-59 via NTP (no pin, virtual) |
 | `clock_hhmm` | Sensor | Time as hour\*100+minute, e.g. 1830 = 18:30 (no pin, virtual) |
+| `nats_value` | Sensor | Value received from a NATS subject (no pin, virtual) |
 | `digital_out` | Actuator | `digitalWrite()` - HIGH or LOW |
 | `relay` | Actuator | `digitalWrite()` with optional inverted logic |
 | `pwm` | Actuator | `analogWrite()` - 0-255 |
@@ -484,6 +544,14 @@ You just describe what you want in natural language. The AI picks the right para
 "Send me a Telegram every 2 minutes."
 -> condition=always, interval_seconds=120
   on_action=telegram, on_telegram_message="heartbeat"
+
+"Alert me when power from NATS exceeds 3000W."
+-> sensor_name=power (nats_value), condition=gt, threshold=3000
+  on_action=telegram, on_telegram_message="Power: {value}W - {power:msg}"
+
+"Turn on the garage light when motion is detected over NATS."
+-> sensor_name=motion (nats_value), condition=eq, threshold=1
+  actuator_name=light (auto on/off)
 ```
 
 ### Behavior
@@ -493,7 +561,7 @@ You just describe what you want in natural language. The AI picks the right para
 - **Auto-off** - when using `actuator_name` or `off_action`, the reverse action runs when the condition clears
 - **Interval** - configurable per rule (default 5 seconds)
 - **Telegram cooldown** - per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
-- **Message interpolation** - `{value}` in telegram/NATS messages is replaced with the triggering sensor's reading; `{device_name}` (e.g. `{chip_temp}`) reads any named sensor live at fire time
+- **Message interpolation** - `{value}` in telegram/NATS messages is replaced with the triggering sensor's reading; `{device_name}` (e.g. `{chip_temp}`) reads any named sensor live at fire time; `{name:msg}` inserts the message string from a NATS virtual sensor's last JSON payload
 - **Sensor caching** - all rules monitoring the same sensor see the same value per evaluation cycle
 - **NATS events** - every rule trigger publishes to `{device_name}.events`
 - **Persistence** - rules survive reboots (`/rules.json`)
@@ -526,7 +594,7 @@ By default WireClaw uses [OpenRouter](https://openrouter.ai/) (cloud, HTTPS). Se
 }
 ```
 
-**Recommended local model:** [gpt-oss](https://ollama.com/library/gpt-oss) (OpenAI's open-weight model) — it has native tool calling support and handles WireClaw's 18-tool schema reliably. The `:latest` tag (20B, 13GB) is a good balance of speed and quality. [Qwen3](https://ollama.com/library/qwen3) models also work well.
+**Recommended local model:** [gpt-oss](https://ollama.com/library/gpt-oss) (OpenAI's open-weight model) - it has native tool calling support and handles WireClaw's 18-tool schema reliably. The `:latest` tag (20B, 13GB) is a good balance of speed and quality. [Qwen3](https://ollama.com/library/qwen3) models also work well.
 
 HTTP mode skips TLS, saving significant RAM during LLM calls. The server must support OpenAI-compatible chat completions with tool calling.
 
@@ -594,6 +662,113 @@ Rule triggers automatically publish events:
 ```json
 {"event":"rule","rule":"cool down","state":"on","reading":29,"threshold":28}
 ```
+
+### NATS Virtual Sensors
+
+Any NATS subject can become a sensor in WireClaw's device registry. Register it via conversation, and the ESP32 subscribes and stores the last received value. Rules, `sensor_read`, and message interpolation all work on it like any other sensor. No pin needed.
+
+```
+device_register(name="power", type="nats_value", subject="home.power", unit="W")
+```
+
+#### Payload Formats
+
+The sensor accepts multiple payload formats on the subscribed subject:
+
+| Published payload | Stored value | Stored message |
+|---|---|---|
+| `42.5` | 42.5 | *(empty)* |
+| `{"value":42.5}` | 42.5 | *(empty)* |
+| `{"value":42.5,"message":"Peak load"}` | 42.5 | Peak load |
+| `on` / `true` / `1` | 1.0 | *(empty)* |
+| `off` / `false` / `0` | 0.0 | *(empty)* |
+
+#### Reading
+
+Via LLM tool:
+```
+sensor_read(name="power")  ->  power: 3200.0 W
+```
+
+Via serial:
+```
+/devices
+  power [nats_value] nats=home.power  = 3200.0 W
+```
+
+#### Rules on NATS Sensors
+
+Rules work exactly the same as any other sensor:
+
+```
+"Alert me on Telegram when power exceeds 3000W."
+
+-> rule_create(sensor_name="power", condition="gt", threshold=3000,
+               on_action="telegram", on_telegram_message="Power high: {value}W",
+               off_action="telegram", off_telegram_message="Power normal: {value}W")
+```
+
+Relay control from a remote sensor:
+
+```
+device_register(name="motion", type="nats_value", subject="garage.motion")
+device_register(name="light", type="relay", pin=4)
+
+rule_create(rule_name="garage_light", sensor_name="motion",
+            condition="eq", threshold=1, actuator_name="light")
+```
+
+When something publishes `1` to `garage.motion`, the relay turns on. `0` turns it off.
+
+#### Message Forwarding with `{name:msg}`
+
+JSON payloads can include a `"message"` field. Use `{name:msg}` in rule templates to forward it:
+
+```bash
+nats pub alerts.fire '{"value":1,"message":"Smoke detected in kitchen"}'
+```
+
+```
+device_register(name="fire", type="nats_value", subject="alerts.fire")
+
+rule_create(rule_name="fire_alert", sensor_name="fire",
+            condition="eq", threshold=1,
+            on_action="telegram", on_telegram_message="{fire:msg}")
+```
+
+Sends `Smoke detected in kitchen` to Telegram. Use `{fire}` (without `:msg`) for the numeric value.
+
+You can combine both in one message:
+
+```
+on_telegram_message="Power: {value}W - {power:msg}"  ->  "Power: 3500W - Washing machine + dryer running"
+```
+
+#### Periodic Reporting
+
+```
+rule_create(rule_name="power_report", sensor_name="power",
+            condition="always", threshold=0, interval_seconds=300,
+            on_action="telegram", on_telegram_message="Power: {power}W")
+```
+
+Sends the current power reading to Telegram every 5 minutes.
+
+#### Removal
+
+```
+device_remove(name="power")
+```
+
+Unsubscribes from the NATS subject and removes the device. Rules referencing it stop evaluating.
+
+#### Persistence and Limits
+
+- Persisted to `/devices.json`, re-subscribed automatically after reboot or NATS reconnect
+- Last received value resets to 0 on boot until a new message arrives
+- Up to 16 devices total (shared with physical sensors/actuators and built-in virtual sensors)
+- NATS subject max length: 31 characters, message field max length: 63 characters
+- 14 NATS subscription slots available (16 max minus 2 for chat + cmd)
 
 ### Multi-Device Communication
 
@@ -665,8 +840,8 @@ Created automatically on flash, persisted across reboots:
 ## Resource Usage
 
 ```
-RAM:   53.6% (176KB of 320KB)
-Flash: 36.5% (1.2MB of 3.3MB)
+RAM:   54.8% (179KB of 320KB)
+Flash: 36.9% (1.2MB of 3.3MB)
 ```
 
 Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (20KB), conversation history, persistent memory (512B), TLS stack.

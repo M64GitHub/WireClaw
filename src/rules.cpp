@@ -200,6 +200,18 @@ static void interpolateMessage(const char *tmpl, const Rule *r,
                 memcpy(varname, p + 1, vlen);
                 varname[vlen] = '\0';
 
+                /* Check for :msg suffix */
+                if (vlen > 4 && strcmp(varname + vlen - 4, ":msg") == 0) {
+                    varname[vlen - 4] = '\0';
+                    Device *dev = deviceFind(varname);
+                    if (dev && dev->kind == DEV_SENSOR_NATS_VALUE) {
+                        const char *m = deviceGetNatsMsg(dev);
+                        w += snprintf(out + w, out_len - w, "%s", m);
+                        p = end + 1;
+                        continue;
+                    }
+                }
+
                 float val;
                 bool found = false;
                 if (strcmp(varname, "value") == 0) {

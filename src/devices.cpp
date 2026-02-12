@@ -20,7 +20,7 @@ static Device g_devices[MAX_DEVICES];
  *============================================================================*/
 
 bool deviceIsSensor(DeviceKind kind) {
-    return kind <= DEV_SENSOR_CLOCK_HHMM;
+    return kind <= DEV_SENSOR_NATS_VALUE;
 }
 
 bool deviceIsActuator(DeviceKind kind) {
@@ -37,6 +37,7 @@ const char *deviceKindName(DeviceKind kind) {
         case DEV_SENSOR_CLOCK_HOUR:    return "clock_hour";
         case DEV_SENSOR_CLOCK_MINUTE:  return "clock_minute";
         case DEV_SENSOR_CLOCK_HHMM:   return "clock_hhmm";
+        case DEV_SENSOR_NATS_VALUE:    return "nats_value";
         case DEV_ACTUATOR_DIGITAL:     return "digital_out";
         case DEV_ACTUATOR_RELAY:       return "relay";
         case DEV_ACTUATOR_PWM:         return "pwm";
@@ -53,6 +54,7 @@ static DeviceKind kindFromString(const char *s) {
     if (strcmp(s, "clock_hour") == 0)    return DEV_SENSOR_CLOCK_HOUR;
     if (strcmp(s, "clock_minute") == 0)  return DEV_SENSOR_CLOCK_MINUTE;
     if (strcmp(s, "clock_hhmm") == 0)   return DEV_SENSOR_CLOCK_HHMM;
+    if (strcmp(s, "nats_value") == 0)    return DEV_SENSOR_NATS_VALUE;
     if (strcmp(s, "digital_out") == 0)   return DEV_ACTUATOR_DIGITAL;
     if (strcmp(s, "relay") == 0)         return DEV_ACTUATOR_RELAY;
     if (strcmp(s, "pwm") == 0)           return DEV_ACTUATOR_PWM;
@@ -67,6 +69,10 @@ const Device *deviceGetAll() {
     return g_devices;
 }
 
+Device *deviceGetAllMutable() {
+    return g_devices;
+}
+
 Device *deviceFind(const char *name) {
     for (int i = 0; i < MAX_DEVICES; i++) {
         if (g_devices[i].used && strcmp(g_devices[i].name, name) == 0)
@@ -76,7 +82,8 @@ Device *deviceFind(const char *name) {
 }
 
 bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
-                    const char *unit, bool inverted) {
+                    const char *unit, bool inverted,
+                    const char *nats_subject) {
     /* Check for duplicate */
     if (deviceFind(name)) return false;
 
@@ -95,6 +102,17 @@ bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
             }
             g_devices[i].inverted = inverted;
             g_devices[i].used = true;
+
+            /* NATS virtual sensor fields */
+            if (nats_subject && nats_subject[0]) {
+                strncpy(g_devices[i].nats_subject, nats_subject, sizeof(g_devices[i].nats_subject) - 1);
+                g_devices[i].nats_subject[sizeof(g_devices[i].nats_subject) - 1] = '\0';
+            } else {
+                g_devices[i].nats_subject[0] = '\0';
+            }
+            g_devices[i].nats_value = 0.0f;
+            g_devices[i].nats_msg[0] = '\0';
+            g_devices[i].nats_sid = 0;
 
             /* Configure GPIO for actuators */
             if (deviceIsActuator(kind) && pin != PIN_NONE) {
@@ -172,6 +190,9 @@ float deviceReadSensor(const Device *dev) {
             return -1.0f;
         }
 
+        case DEV_SENSOR_NATS_VALUE:
+            return dev->nats_value;
+
         default:
             return 0.0f;
     }
@@ -207,6 +228,93 @@ bool deviceSetActuator(const Device *dev, int value) {
         default:
             return false;
     }
+}
+
+/*============================================================================
+ * NATS Virtual Sensor Helpers
+ *============================================================================*/
+
+void deviceSetNatsValue(Device *dev, float value, const char *msg) {
+    if (!dev) return;
+    dev->nats_value = value;
+    if (msg) {
+        strncpy(dev->nats_msg, msg, sizeof(dev->nats_msg) - 1);
+        dev->nats_msg[sizeof(dev->nats_msg) - 1] = '\0';
+    } else {
+        dev->nats_msg[0] = '\0';
+    }
+}
+
+const char *deviceGetNatsMsg(const Device *dev) {
+    if (!dev || dev->kind != DEV_SENSOR_NATS_VALUE) return "";
+    return dev->nats_msg;
+}
+
+void parseNatsPayload(const uint8_t *data, size_t len,
+                      float *out_value, char *out_msg, size_t msg_len) {
+    *out_value = 0.0f;
+    out_msg[0] = '\0';
+
+    if (len == 0 || !data) return;
+
+    /* Null-terminate into a stack buffer */
+    char buf[256];
+    size_t copy = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
+    memcpy(buf, data, copy);
+    buf[copy] = '\0';
+
+    /* Skip leading whitespace */
+    const char *p = buf;
+    while (*p == ' ' || *p == '\t') p++;
+
+    /* 1. Try bare number */
+    char *endp = nullptr;
+    float v = strtof(p, &endp);
+    if (endp != p && (*endp == '\0' || *endp == ' ' || *endp == '\t' ||
+                       *endp == '\n' || *endp == '\r')) {
+        *out_value = v;
+        return;
+    }
+
+    /* 2. Try JSON with "value" field */
+    if (*p == '{') {
+        const char *vk = strstr(p, "\"value\"");
+        if (vk) {
+            vk += 7;
+            while (*vk == ' ' || *vk == ':') vk++;
+            *out_value = strtof(vk, nullptr);
+        }
+        /* Extract "message" field if present */
+        const char *mk = strstr(p, "\"message\"");
+        if (mk) {
+            mk += 9;
+            while (*mk == ' ' || *mk == ':') mk++;
+            if (*mk == '"') {
+                mk++;
+                size_t w = 0;
+                while (*mk && *mk != '"' && w < msg_len - 1) {
+                    if (*mk == '\\' && *(mk + 1)) mk++;
+                    out_msg[w++] = *mk++;
+                }
+                out_msg[w] = '\0';
+            }
+        }
+        return;
+    }
+
+    /* 3. Boolean-ish strings */
+    if (strcasecmp(p, "on") == 0 || strcasecmp(p, "true") == 0 ||
+        strcmp(p, "1") == 0) {
+        *out_value = 1.0f;
+        return;
+    }
+    if (strcasecmp(p, "off") == 0 || strcasecmp(p, "false") == 0 ||
+        strcmp(p, "0") == 0) {
+        *out_value = 0.0f;
+        return;
+    }
+
+    /* 4. Anything else -> 0.0 */
 }
 
 /*============================================================================
@@ -270,9 +378,14 @@ void devicesSave() {
         first = false;
 
         w += snprintf(buf + w, sizeof(buf) - w,
-            "{\"n\":\"%s\",\"k\":\"%s\",\"p\":%d,\"u\":\"%s\",\"i\":%s}",
+            "{\"n\":\"%s\",\"k\":\"%s\",\"p\":%d,\"u\":\"%s\",\"i\":%s",
             d->name, deviceKindName(d->kind), d->pin,
             d->unit, d->inverted ? "true" : "false");
+        if (d->nats_subject[0]) {
+            w += snprintf(buf + w, sizeof(buf) - w,
+                ",\"ns\":\"%s\"", d->nats_subject);
+        }
+        w += snprintf(buf + w, sizeof(buf) - w, "}");
 
         if (w >= (int)sizeof(buf) - 1) break;
     }
@@ -330,8 +443,12 @@ static void devicesLoad() {
         devJsonGetString(objBuf, "u", unit, sizeof(unit));
         bool inverted = devJsonGetBool(objBuf, "i", false);
 
+        char nats_subj[32] = "";
+        devJsonGetString(objBuf, "ns", nats_subj, sizeof(nats_subj));
+
         DeviceKind kind = kindFromString(kind_str);
-        deviceRegister(name, kind, (uint8_t)pin, unit, inverted);
+        deviceRegister(name, kind, (uint8_t)pin, unit, inverted,
+                       nats_subj[0] ? nats_subj : nullptr);
         count++;
 
         p = obj_end + 1;

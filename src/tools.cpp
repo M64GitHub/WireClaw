@@ -20,7 +20,12 @@ extern void ledOff();
 extern bool g_led_user;
 extern NatsClient natsClient;
 extern bool g_nats_connected;
+extern bool g_nats_enabled;
 extern temperature_sensor_handle_t g_temp_sensor;
+
+/* NATS virtual sensor helpers (from main.cpp) */
+extern void natsSubscribeDeviceSensors();
+extern void natsUnsubscribeDevice(const char *name);
 
 /*============================================================================
  * Simple JSON argument parser (for tool arguments)
@@ -87,14 +92,14 @@ static const char *TOOLS_JSON = R"JSON([
 {"type":"function","function":{"name":"file_write","description":"Write file to filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
 {"type":"function","function":{"name":"nats_publish","description":"Publish NATS message","parameters":{"type":"object","properties":{"subject":{"type":"string"},"payload":{"type":"string"}},"required":["subject","payload"]}}},
 {"type":"function","function":{"name":"temperature_read","description":"Read chip temperature (C)","parameters":{"type":"object","properties":{}}}},
-{"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","description":"digital_in|analog_in|ntc_10k|ldr|digital_out|relay|pwm"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"}},"required":["name","type","pin"]}}},
+{"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","description":"digital_in|analog_in|ntc_10k|ldr|nats_value|digital_out|relay|pwm"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value type)"}},"required":["name","type"]}}},
 {"type":"function","function":{"name":"device_list","description":"List registered devices","parameters":{"type":"object","properties":{}}}},
 {"type":"function","function":{"name":"device_remove","description":"Remove device by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"sensor_read","description":"Read named sensor value","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"actuator_set","description":"Set actuator value","parameters":{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"integer"}},"required":["name","value"]}}},
 {"type":"function","function":{"name":"rule_create","description":"Create automation rule: sensor condition triggers action periodically","parameters":{"type":"object","properties":{"rule_name":{"type":"string"},"sensor_name":{"type":"string"},"sensor_pin":{"type":"integer"},"condition":{"type":"string","description":"gt|lt|eq|neq|change|always"},"threshold":{"type":"integer"},"interval_seconds":{"type":"integer"},"actuator_name":{"type":"string"},"on_action":{"type":"string","description":"gpio_write|led_set|nats_publish|actuator|telegram"},"on_pin":{"type":"integer"},"on_value":{"type":"integer"},"on_r":{"type":"integer"},"on_g":{"type":"integer"},"on_b":{"type":"integer"},"on_nats_subject":{"type":"string"},"on_nats_payload":{"type":"string"},"on_telegram_message":{"type":"string","description":"Use {value} or {device_name}"},"off_action":{"type":"string","description":"auto|none|gpio_write|led_set|nats_publish|actuator|telegram"},"off_pin":{"type":"integer"},"off_value":{"type":"integer"},"off_r":{"type":"integer"},"off_g":{"type":"integer"},"off_b":{"type":"integer"},"off_nats_subject":{"type":"string"},"off_nats_payload":{"type":"string"},"off_telegram_message":{"type":"string"}},"required":["rule_name","condition","threshold"]}}},
 {"type":"function","function":{"name":"rule_list","description":"List all rules","parameters":{"type":"object","properties":{}}}},
-{"type":"function","function":{"name":"rule_delete","description":"Delete rule by ID or 'all'","parameters":{"type":"object","properties":{"rule_id":{"type":"string"}},"required":["rule_id"]}}},
+{"type":"function","function":{"name":"rule_delete","description":"Delete a single rule by its ID (e.g. rule_01). Use rule_list first to find the ID.","parameters":{"type":"object","properties":{"rule_id":{"type":"string"}},"required":["rule_id"]}}},
 {"type":"function","function":{"name":"rule_enable","description":"Enable/disable rule","parameters":{"type":"object","properties":{"rule_id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["rule_id","enabled"]}}},
 {"type":"function","function":{"name":"remote_chat","description":"Chat with another WireClaw device via NATS","parameters":{"type":"object","properties":{"device":{"type":"string"},"message":{"type":"string"}},"required":["device","message"]}}}
 ])JSON";
@@ -269,12 +274,16 @@ static void tool_device_register(const char *args, char *result, int result_len)
     jsonArgString(args, "unit", unit, sizeof(unit));
     bool inverted = jsonArgBool(args, "inverted", false);
 
+    char subject[32] = "";
+    jsonArgString(args, "subject", subject, sizeof(subject));
+
     /* Map type string to DeviceKind */
     DeviceKind kind;
     if (strcmp(type_str, "digital_in") == 0)         kind = DEV_SENSOR_DIGITAL;
     else if (strcmp(type_str, "analog_in") == 0)     kind = DEV_SENSOR_ANALOG_RAW;
     else if (strcmp(type_str, "ntc_10k") == 0)       kind = DEV_SENSOR_NTC_10K;
     else if (strcmp(type_str, "ldr") == 0)            kind = DEV_SENSOR_LDR;
+    else if (strcmp(type_str, "nats_value") == 0)     kind = DEV_SENSOR_NATS_VALUE;
     else if (strcmp(type_str, "digital_out") == 0)   kind = DEV_ACTUATOR_DIGITAL;
     else if (strcmp(type_str, "relay") == 0)          kind = DEV_ACTUATOR_RELAY;
     else if (strcmp(type_str, "pwm") == 0)            kind = DEV_ACTUATOR_PWM;
@@ -283,14 +292,37 @@ static void tool_device_register(const char *args, char *result, int result_len)
         return;
     }
 
-    if (!deviceRegister(name, kind, (uint8_t)pin, unit, inverted)) {
+    /* Validate: nats_value requires subject, others require pin */
+    if (kind == DEV_SENSOR_NATS_VALUE) {
+        if (subject[0] == '\0') {
+            snprintf(result, result_len, "Error: nats_value requires 'subject'");
+            return;
+        }
+        if (!g_nats_enabled) {
+            snprintf(result, result_len, "Warning: NATS not enabled. Registered but won't receive data");
+        }
+        pin = PIN_NONE;
+    } else if (pin == PIN_NONE && deviceIsActuator(kind)) {
+        snprintf(result, result_len, "Error: actuator requires 'pin'");
+        return;
+    }
+
+    if (!deviceRegister(name, kind, (uint8_t)pin, unit, inverted,
+                        subject[0] ? subject : nullptr)) {
         snprintf(result, result_len, "Error: register failed (duplicate name or full)");
         return;
     }
 
     devicesSave();
-    snprintf(result, result_len, "Registered %s '%s' on pin %d",
-             deviceIsSensor(kind) ? "sensor" : "actuator", name, pin);
+
+    if (kind == DEV_SENSOR_NATS_VALUE) {
+        natsSubscribeDeviceSensors();
+        snprintf(result, result_len, "Registered nats_value sensor '%s' on subject '%s'",
+                 name, subject);
+    } else {
+        snprintf(result, result_len, "Registered %s '%s' on pin %d",
+                 deviceIsSensor(kind) ? "sensor" : "actuator", name, pin);
+    }
 }
 
 static void tool_device_list(const char *args, char *result, int result_len) {
@@ -305,7 +337,11 @@ static void tool_device_list(const char *args, char *result, int result_len) {
 
         if (count > 0) w += snprintf(result + w, result_len - w, "; ");
 
-        if (deviceIsSensor(d->kind)) {
+        if (d->kind == DEV_SENSOR_NATS_VALUE) {
+            float val = deviceReadSensor(d);
+            w += snprintf(result + w, result_len - w, "%s(nats_value %s)=%.1f%s",
+                         d->name, d->nats_subject, val, d->unit);
+        } else if (deviceIsSensor(d->kind)) {
             float val = deviceReadSensor(d);
             w += snprintf(result + w, result_len - w, "%s(%s pin%d)=%.1f%s",
                          d->name, deviceKindName(d->kind), d->pin, val, d->unit);
@@ -327,6 +363,12 @@ static void tool_device_remove(const char *args, char *result, int result_len) {
     if (!jsonArgString(args, "name", name, sizeof(name))) {
         snprintf(result, result_len, "Error: missing 'name'");
         return;
+    }
+
+    /* Unsubscribe NATS if this is a nats_value device */
+    Device *dev = deviceFind(name);
+    if (dev && dev->kind == DEV_SENSOR_NATS_VALUE) {
+        natsUnsubscribeDevice(name);
     }
 
     if (!deviceRemove(name)) {
