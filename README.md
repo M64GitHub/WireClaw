@@ -2,6 +2,8 @@
 
 An AI agent that lives on a $5 microcontroller and controls real hardware.
 
+**[Flash it to your ESP32 from the browser](https://wireclaw.io/flash.html)** — no tools to install, configure from your phone.
+
 Tell it what you want in plain language - over Telegram, serial, or NATS - and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI. It remembers your preferences across reboots, knows what time it is, and can talk to other WireClaw devices on the network.
 
 ```
@@ -95,6 +97,19 @@ Serial:  device_register({"name":"room_temp","type":"nats_value","subject":"home
          -> Registered nats_value sensor 'room_temp' on subject 'home.room.temp'
 ```
 
+The device registry now includes the built-in sensors and the new NATS sensor:
+
+```
+> /devices
+--- devices ---
+  chip_temp [internal_temp] pin=255  = 27.7 C
+  clock_hour [clock_hour] pin=255  = 4.0 h
+  clock_minute [clock_minute] pin=255  = 11.0 m
+  clock_hhmm [clock_hhmm] pin=255  = 411.0
+  room_temp [nats_value] nats=home.room.temp  = 0.0 C
+---
+```
+
 Now any system on the NATS network can push values to it:
 
 ```bash
@@ -168,7 +183,9 @@ The rule loop and the AI loop share the same `loop()` function but serve differe
 
 ## Try It With Just a Dev Board
 
-You don't need external sensors to test WireClaw. The ESP32's internal temperature sensor is pre-registered as `chip_temp`, clock sensors provide the current hour and minute, and the onboard RGB LED is available as a rule action. Here's some examples using only the bare dev board:
+All you need is an ESP32-C6 dev board and a USB cable. [Flash it from your browser](https://wireclaw.io/flash.html), connect to the setup AP from your phone, enter your WiFi and API key, and you're up and running.
+
+The ESP32's internal temperature sensor is pre-registered as `chip_temp`, clock sensors provide the current hour and minute, and the onboard RGB LED is available as a rule action. No external sensors needed — here's some examples using only the bare dev board:
 
 ### Example: Temperature-Based LED Color
 
@@ -405,13 +422,29 @@ The dev board alone is enough to get started - chip temperature sensor, clock se
 
 ## Quick Start
 
-### 1. Install PlatformIO
+### Option A: Setup Portal (no CLI needed)
+
+Flash the firmware from your browser and configure from your phone:
+
+1. Go to **[wireclaw.io/flash.html](https://wireclaw.io/flash.html)** and click **Flash Now** (requires Chrome/Edge with WebSerial)
+2. The ESP32 boots, finds no WiFi config, and starts an open AP called **WireClaw-Setup**
+3. Connect to the AP from your phone — a setup page opens automatically
+4. Fill in your WiFi credentials, API key, and any optional settings
+5. Hit **Save & Reboot** — the device connects to your network and is ready to use
+
+The setup portal also activates if WiFi connection fails (wrong password, network down). The LED pulses cyan while the portal is active.
+
+To reconfigure later, type `/setup` in the serial monitor to re-enter the portal at any time.
+
+### Option B: Manual Config (PlatformIO)
+
+#### 1. Install PlatformIO
 
 ```
 pip install platformio
 ```
 
-### 2. Configure
+#### 2. Configure
 
 ```
 cp data/config.json.example data/config.json
@@ -442,7 +475,7 @@ For Telegram: create a bot via [@BotFather](https://t.me/BotFather), get your ch
 
 For a local LLM: set `api_base_url` to your server's OpenAI-compatible endpoint, e.g. `http://192.168.1.50:11434/v1/chat/completions` for Ollama.
 
-### 3. Build and Flash
+#### 3. Build and Flash
 
 ```
 pio run -t uploadfs    # upload config + system prompt to filesystem
@@ -451,6 +484,41 @@ pio device monitor     # connect via serial (115200 baud)
 ```
 
 Type a message and press Enter. Or open Telegram and text your bot.
+
+## Setup Portal
+
+When WireClaw has no WiFi configuration — or can't connect to the configured network — it automatically enters setup mode:
+
+1. Starts an open WiFi access point: **WireClaw-Setup**
+2. Runs a captive portal on 192.168.4.1 (phones open this automatically)
+3. Serves a config form with all settings (WiFi, API key, model, NATS, Telegram, timezone)
+4. On submit, writes `config.json` to flash and reboots into normal operation
+
+The portal times out after 5 minutes and reboots to retry. The LED pulses cyan while the portal is active.
+
+### When the portal activates
+
+| Condition | What happens |
+|-----------|--------------|
+| No `wifi_ssid` in config (or no config.json at all) | Portal starts immediately on boot |
+| WiFi connection fails after retries | Portal starts instead of rebooting blindly |
+| `/setup` typed in serial monitor | Portal starts on demand (for reconfiguration) |
+
+### Form fields
+
+| Field | Required | Default |
+|-------|----------|---------|
+| WiFi SSID | Yes | — |
+| WiFi Password | Yes | — |
+| OpenRouter API Key | No* | — |
+| Model | No | `openai/gpt-4o-mini` |
+| Device Name | No | `wireclaw-01` |
+| API Base URL | No | — |
+| NATS Host / Port | No | — / `4222` |
+| Telegram Token / Chat ID | No | — |
+| Timezone | No | `UTC0` |
+
+\* Required unless using a local LLM via API Base URL.
 
 ## Device Registry
 
@@ -620,7 +688,7 @@ Works with [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggergan
 | **Rule Engine** | |
 | `rule_create` | Create an automation rule |
 | `rule_list` | List rules with status and last readings |
-| `rule_delete` | Delete a rule by ID or "all" |
+| `rule_delete` | Delete a rule by ID |
 | `rule_enable` | Enable/disable a rule without deleting |
 | **System** | |
 | `device_info` | Heap, uptime, WiFi, chip info |
@@ -644,6 +712,7 @@ Works with [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggergan
 | `/clear` | Clear conversation history |
 | `/heap` | Show free memory |
 | `/debug` | Toggle debug output |
+| `/setup` | Start WiFi setup portal for reconfiguration |
 | `/reboot` | Restart ESP32 |
 | `/help` | List commands |
 
@@ -840,11 +909,11 @@ Created automatically on flash, persisted across reboots:
 ## Resource Usage
 
 ```
-RAM:   54.8% (179KB of 320KB)
-Flash: 36.9% (1.2MB of 3.3MB)
+RAM:   55.4% (181KB of 320KB)
+Flash: 37.4% (1.2MB of 3.3MB)
 ```
 
-Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (20KB), conversation history, persistent memory (512B), TLS stack.
+Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (20KB), conversation history, persistent memory (512B), TLS stack. Setup portal HTML is stored in flash (PROGMEM), not RAM.
 
 ## License
 

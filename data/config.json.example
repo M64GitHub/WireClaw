@@ -1,17 +1,14 @@
 {
-  "wifi_ssid": "YOUR-WIFI-SSID",
-  "wifi_pass": "YOUR-WIFI-PASSWORD",
-  "api_key": "sk-or-v1-your-openrouter-api-key",
+  "wifi_ssid": "",
+  "wifi_pass": "",
+  "api_key": "",
   "model": "openai/gpt-4o-mini",
-  "device_name": "esp-claw-01",
+  "device_name": "wireclaw-01",
   "api_base_url": "",
-  "max_tokens": 2048,
-  "temperature": 0.7,
-  "nats_host": "192.168.1.100",
+  "nats_host": "",
   "nats_port": "4222",
   "telegram_token": "",
   "telegram_chat_id": "",
   "telegram_cooldown": "60",
-  "timezone": "CET-1CEST,M3.5.0,M10.5.0/3"
+  "timezone": "UTC0"
 }
-

@@ -18,6 +18,7 @@
 #include "tools.h"
 #include "devices.h"
 #include "rules.h"
+#include "setup_portal.h"
 #include <nats_atoms.h>
 
 /*============================================================================
@@ -1326,6 +1327,12 @@ void handleSerialCommand(const char *input) {
         return;
     }
 
+    if (strcmp(input, "/setup") == 0) {
+        Serial.printf("Starting setup portal...\n");
+        runSetupPortal(); /* blocks until config saved + reboot */
+        return;
+    }
+
     if (strcmp(input, "/help") == 0) {
         Serial.printf("--- esp-claw commands ---\n");
         Serial.printf("  /status  - Show device status\n");
@@ -1339,6 +1346,7 @@ void handleSerialCommand(const char *input) {
         Serial.printf("  /time    - Show current time and timezone\n");
         Serial.printf("  /heap    - Show free memory\n");
         Serial.printf("  /debug   - Toggle debug output\n");
+        Serial.printf("  /setup   - Start WiFi setup portal\n");
         Serial.printf("  /reboot  - Restart ESP32\n");
         Serial.printf("  /help    - This help\n");
         Serial.printf("  (anything else) - Chat with AI\n");
@@ -1361,7 +1369,7 @@ void setup() {
 
     Serial.printf("\n\n");
     Serial.printf("========================================\n");
-    Serial.printf("  esp-claw - ESP32 AI Agent v0.6.0\n");
+    Serial.printf("  esp-claw - ESP32 AI Agent v0.7.0\n");
     Serial.printf("========================================\n\n");
 
     /* Load config from LittleFS */
@@ -1381,19 +1389,15 @@ void setup() {
     devicesInit();
     rulesInit();
 
-    if (cfg_wifi_ssid[0] == '\0' || cfg_api_key[0] == '\0') {
-        Serial.printf("\n[ERROR] Missing config! Upload filesystem:\n");
-        Serial.printf("  pio run -t uploadfs\n");
-        Serial.printf("Halted.\n");
-        ledRed();
-        while (true) delay(1000);
+    if (cfg_wifi_ssid[0] == '\0') {
+        Serial.printf("\n[!] No WiFi config — starting setup portal\n");
+        runSetupPortal(); /* blocks until config saved + reboot */
     }
 
     /* Connect WiFi */
     if (!connectWiFi()) {
-        Serial.printf("WiFi failed. Rebooting in 10s...\n");
-        delay(10000);
-        ESP.restart();
+        Serial.printf("[!] WiFi failed — starting setup portal\n");
+        runSetupPortal(); /* blocks until config saved + reboot */
     }
 
     /* NTP time sync */
