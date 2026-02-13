@@ -102,12 +102,13 @@ static const char *TOOLS_JSON = R"JSON([
 {"type":"function","function":{"name":"device_remove","description":"Remove device by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"sensor_read","description":"Read named sensor value","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"actuator_set","description":"Set actuator value","parameters":{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"integer"}},"required":["name","value"]}}},
-{"type":"function","function":{"name":"rule_create","description":"Create automation rule: sensor condition triggers action periodically","parameters":{"type":"object","properties":{"rule_name":{"type":"string"},"sensor_name":{"type":"string"},"sensor_pin":{"type":"integer"},"condition":{"type":"string","description":"gt|lt|eq|neq|change|always"},"threshold":{"type":"integer"},"interval_seconds":{"type":"integer"},"actuator_name":{"type":"string"},"on_action":{"type":"string","description":"gpio_write|led_set|nats_publish|actuator|telegram|serial_send"},"on_pin":{"type":"integer"},"on_value":{"type":"integer"},"on_r":{"type":"integer"},"on_g":{"type":"integer"},"on_b":{"type":"integer"},"on_nats_subject":{"type":"string"},"on_nats_payload":{"type":"string"},"on_telegram_message":{"type":"string","description":"Use {value} or {device_name}"},"on_serial_text":{"type":"string","description":"Text to send via serial_text UART"},"off_action":{"type":"string","description":"auto|none|gpio_write|led_set|nats_publish|actuator|telegram|serial_send"},"off_pin":{"type":"integer"},"off_value":{"type":"integer"},"off_r":{"type":"integer"},"off_g":{"type":"integer"},"off_b":{"type":"integer"},"off_nats_subject":{"type":"string"},"off_nats_payload":{"type":"string"},"off_telegram_message":{"type":"string"},"off_serial_text":{"type":"string","description":"Text for serial off-action"}},"required":["rule_name","condition","threshold"]}}},
+{"type":"function","function":{"name":"rule_create","description":"Create automation rule. Use chained condition for chain-only targets.","parameters":{"type":"object","properties":{"rule_name":{"type":"string"},"sensor_name":{"type":"string"},"sensor_pin":{"type":"integer"},"condition":{"type":"string","description":"gt|lt|eq|neq|change|always|chained"},"threshold":{"type":"integer"},"interval_seconds":{"type":"integer"},"actuator_name":{"type":"string"},"on_action":{"type":"string","description":"gpio_write|led_set|nats_publish|actuator|telegram|serial_send"},"on_pin":{"type":"integer"},"on_value":{"type":"integer"},"on_r":{"type":"integer"},"on_g":{"type":"integer"},"on_b":{"type":"integer"},"on_nats_subject":{"type":"string"},"on_nats_payload":{"type":"string"},"on_telegram_message":{"type":"string","description":"Use {value} or {device_name}"},"on_serial_text":{"type":"string","description":"Text to send via serial_text UART"},"off_action":{"type":"string","description":"auto|none|gpio_write|led_set|nats_publish|actuator|telegram|serial_send"},"off_pin":{"type":"integer"},"off_value":{"type":"integer"},"off_r":{"type":"integer"},"off_g":{"type":"integer"},"off_b":{"type":"integer"},"off_nats_subject":{"type":"string"},"off_nats_payload":{"type":"string"},"off_telegram_message":{"type":"string"},"off_serial_text":{"type":"string","description":"Text for serial off-action"},"chain_rule":{"type":"string","description":"Rule ID to trigger after ON action (e.g. rule_01)"},"chain_delay_seconds":{"type":"integer","description":"Delay before ON chain fires (0=immediate)"},"chain_off_rule":{"type":"string","description":"Rule ID to trigger after OFF action"},"chain_off_delay_seconds":{"type":"integer","description":"Delay before OFF chain fires (0=immediate)"}},"required":["rule_name"]}}},
 {"type":"function","function":{"name":"rule_list","description":"List all rules","parameters":{"type":"object","properties":{}}}},
-{"type":"function","function":{"name":"rule_delete","description":"Delete a single rule by its ID (e.g. rule_01). Use rule_list first to find the ID.","parameters":{"type":"object","properties":{"rule_id":{"type":"string"}},"required":["rule_id"]}}},
+{"type":"function","function":{"name":"rule_delete","description":"Delete rule by ID (e.g. rule_01), or pass 'all' to delete every rule at once.","parameters":{"type":"object","properties":{"rule_id":{"type":"string","description":"Rule ID or 'all'"}},"required":["rule_id"]}}},
 {"type":"function","function":{"name":"rule_enable","description":"Enable/disable rule","parameters":{"type":"object","properties":{"rule_id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["rule_id","enabled"]}}},
 {"type":"function","function":{"name":"serial_send","description":"Send text over serial_text UART","parameters":{"type":"object","properties":{"text":{"type":"string","description":"Text to send (newline appended)"}},"required":["text"]}}},
-{"type":"function","function":{"name":"remote_chat","description":"Chat with another WireClaw device via NATS","parameters":{"type":"object","properties":{"device":{"type":"string"},"message":{"type":"string"}},"required":["device","message"]}}}
+{"type":"function","function":{"name":"remote_chat","description":"Chat with another WireClaw device via NATS","parameters":{"type":"object","properties":{"device":{"type":"string"},"message":{"type":"string"}},"required":["device","message"]}}},
+{"type":"function","function":{"name":"chain_create","description":"Create multi-step automation chain (up to 5 steps) in one call. Steps execute in order with delays.","parameters":{"type":"object","properties":{"sensor_name":{"type":"string","description":"Sensor to monitor"},"condition":{"type":"string","description":"gt|lt|eq|neq|change|always"},"threshold":{"type":"integer"},"interval_seconds":{"type":"integer"},"step1_action":{"type":"string","description":"telegram|led_set|gpio_write|nats_publish|actuator|serial_send"},"step1_message":{"type":"string","description":"For telegram/nats/serial_send"},"step1_r":{"type":"integer"},"step1_g":{"type":"integer"},"step1_b":{"type":"integer"},"step1_pin":{"type":"integer"},"step1_value":{"type":"integer"},"step1_actuator":{"type":"string"},"step1_nats_subject":{"type":"string"},"step2_action":{"type":"string","description":"Action after step1"},"step2_delay":{"type":"integer","description":"Seconds before step2"},"step2_message":{"type":"string"},"step2_r":{"type":"integer"},"step2_g":{"type":"integer"},"step2_b":{"type":"integer"},"step2_pin":{"type":"integer"},"step2_value":{"type":"integer"},"step2_actuator":{"type":"string"},"step2_nats_subject":{"type":"string"},"step3_action":{"type":"string","description":"Step3 (optional)"},"step3_delay":{"type":"integer","description":"Seconds before step3"},"step3_message":{"type":"string"},"step3_r":{"type":"integer"},"step3_g":{"type":"integer"},"step3_b":{"type":"integer"},"step3_pin":{"type":"integer"},"step3_value":{"type":"integer"},"step3_actuator":{"type":"string"},"step3_nats_subject":{"type":"string"},"step4_action":{"type":"string","description":"Step4 (optional)"},"step4_delay":{"type":"integer","description":"Seconds before step4"},"step4_message":{"type":"string"},"step4_r":{"type":"integer"},"step4_g":{"type":"integer"},"step4_b":{"type":"integer"},"step4_pin":{"type":"integer"},"step4_value":{"type":"integer"},"step4_actuator":{"type":"string"},"step4_nats_subject":{"type":"string"},"step5_action":{"type":"string","description":"Step5 (optional)"},"step5_delay":{"type":"integer","description":"Seconds before step5"},"step5_message":{"type":"string"},"step5_r":{"type":"integer"},"step5_g":{"type":"integer"},"step5_b":{"type":"integer"},"step5_pin":{"type":"integer"},"step5_value":{"type":"integer"},"step5_actuator":{"type":"string"},"step5_nats_subject":{"type":"string"}},"required":["sensor_name","condition","threshold","step1_action","step2_action"]}}}
 ])JSON";
 
 /*============================================================================
@@ -493,6 +494,7 @@ static ConditionOp parseConditionOp(const char *s) {
     if (strcmp(s, "neq") == 0)    return COND_NEQ;
     if (strcmp(s, "change") == 0) return COND_CHANGE;
     if (strcmp(s, "always") == 0) return COND_ALWAYS;
+    if (strcmp(s, "chained") == 0) return COND_CHAINED;
     return COND_GT;
 }
 
@@ -503,34 +505,41 @@ static void tool_rule_create(const char *args, char *result, int result_len) {
         return;
     }
 
-    char cond_str[16];
-    if (!jsonArgString(args, "condition", cond_str, sizeof(cond_str))) {
-        snprintf(result, result_len, "Error: missing 'condition'");
-        return;
-    }
-    ConditionOp condition = parseConditionOp(cond_str);
-    int32_t threshold = jsonArgInt(args, "threshold", 0);
-
     /* Sensor source: device name or raw pin */
     char sensor_name[DEV_NAME_LEN] = "";
     jsonArgString(args, "sensor_name", sensor_name, sizeof(sensor_name));
     uint8_t sensor_pin = (uint8_t)jsonArgInt(args, "sensor_pin", PIN_NONE);
+
+    char cond_str[16];
+    if (!jsonArgString(args, "condition", cond_str, sizeof(cond_str))) {
+        /* Default to "chained" if no condition and no sensor source */
+        if (!sensor_name[0] && sensor_pin == PIN_NONE) {
+            strcpy(cond_str, "chained");
+        } else {
+            snprintf(result, result_len, "Error: missing 'condition'");
+            return;
+        }
+    }
+    ConditionOp condition = parseConditionOp(cond_str);
+    int32_t threshold = jsonArgInt(args, "threshold", 0);
     bool sensor_analog = false;
 
-    /* Validate sensor source */
-    if (sensor_name[0]) {
-        Device *dev = deviceFind(sensor_name);
-        if (!dev) {
-            snprintf(result, result_len, "Error: sensor '%s' not found in device registry", sensor_name);
+    /* Validate sensor source (not required for COND_CHAINED) */
+    if (condition != COND_CHAINED) {
+        if (sensor_name[0]) {
+            Device *dev = deviceFind(sensor_name);
+            if (!dev) {
+                snprintf(result, result_len, "Error: sensor '%s' not found in device registry", sensor_name);
+                return;
+            }
+            if (!deviceIsSensor(dev->kind)) {
+                snprintf(result, result_len, "Error: '%s' is not a sensor", sensor_name);
+                return;
+            }
+        } else if (sensor_pin == PIN_NONE) {
+            snprintf(result, result_len, "Error: provide sensor_name or sensor_pin");
             return;
         }
-        if (!deviceIsSensor(dev->kind)) {
-            snprintf(result, result_len, "Error: '%s' is not a sensor", sensor_name);
-            return;
-        }
-    } else if (sensor_pin == PIN_NONE) {
-        snprintf(result, result_len, "Error: provide sensor_name or sensor_pin");
-        return;
     }
 
     int interval_s = jsonArgInt(args, "interval_seconds", 5);
@@ -658,17 +667,33 @@ static void tool_rule_create(const char *args, char *result, int result_len) {
         }
     }
 
+    /* Chain parameters */
+    char chain_rule[RULE_ID_LEN] = "";
+    jsonArgString(args, "chain_rule", chain_rule, sizeof(chain_rule));
+    uint32_t chain_delay_ms = (uint32_t)jsonArgInt(args, "chain_delay_seconds", 0) * 1000;
+    char chain_off_rule[RULE_ID_LEN] = "";
+    jsonArgString(args, "chain_off_rule", chain_off_rule, sizeof(chain_off_rule));
+    uint32_t chain_off_delay_ms = (uint32_t)jsonArgInt(args, "chain_off_delay_seconds", 0) * 1000;
+
     const char *id = ruleCreate(rule_name, sensor_name, sensor_pin, sensor_analog,
                                 condition, threshold, interval_ms,
                                 on_action, on_actuator, on_pin, on_value,
                                 on_nats_subj, on_nats_pay,
                                 has_off, off_action, off_actuator,
-                                off_pin, off_value, off_nats_subj, off_nats_pay);
+                                off_pin, off_value, off_nats_subj, off_nats_pay,
+                                chain_rule, chain_delay_ms,
+                                chain_off_rule, chain_off_delay_ms);
 
     if (!id) {
         snprintf(result, result_len, "Error: rule creation failed (max %d rules)", MAX_RULES);
         return;
     }
+
+    /* Detect self-reference (ruleCreate silently cleared it) */
+    if (chain_rule[0] && strcmp(chain_rule, id) == 0)
+        chain_rule[0] = '\0';
+    if (chain_off_rule[0] && strcmp(chain_off_rule, id) == 0)
+        chain_off_rule[0] = '\0';
 
     rulesSave();
 
@@ -681,12 +706,36 @@ static void tool_rule_create(const char *args, char *result, int result_len) {
         case COND_NEQ: cond_sym = "!="; break;
         case COND_CHANGE: cond_sym = "changed"; break;
         case COND_ALWAYS: cond_sym = "always"; break;
+        case COND_CHAINED: cond_sym = "chained"; break;
     }
 
-    const char *src = sensor_name[0] ? sensor_name : "pin";
-    snprintf(result, result_len, "Rule created: %s '%s' - %s %s %d (every %ds)%s",
-             id, rule_name, src, cond_sym, (int)threshold, interval_s,
-             has_off ? " with auto-off" : "");
+    int w = 0;
+    if (condition == COND_CHAINED) {
+        w = snprintf(result, result_len, "Rule created: %s '%s' - chained (fires only via chain)",
+                     id, rule_name);
+    } else {
+        const char *src = sensor_name[0] ? sensor_name : "pin";
+        w = snprintf(result, result_len, "Rule created: %s '%s' - %s %s %d (every %ds)%s",
+                     id, rule_name, src, cond_sym, (int)threshold, interval_s,
+                     has_off ? " with auto-off" : "");
+    }
+    if (chain_rule[0] && w < result_len - 1) {
+        w += snprintf(result + w, result_len - w, " ->%s(%ds)",
+                      chain_rule, (int)(chain_delay_ms / 1000));
+    }
+    if (chain_off_rule[0] && w < result_len - 1) {
+        w += snprintf(result + w, result_len - w, " off->%s(%ds)",
+                 chain_off_rule, (int)(chain_off_delay_ms / 1000));
+    }
+    /* Warn about orphan delays */
+    if (!chain_rule[0] && chain_delay_ms > 0 && w < result_len - 1) {
+        w += snprintf(result + w, result_len - w,
+                      " (Warning: chain_delay ignored, no chain_rule)");
+    }
+    if (!chain_off_rule[0] && chain_off_delay_ms > 0 && w < result_len - 1) {
+        w += snprintf(result + w, result_len - w,
+                      " (Warning: chain_off_delay ignored, no chain_off_rule)");
+    }
 }
 
 static void tool_rule_list(const char *args, char *result, int result_len) {
@@ -702,16 +751,33 @@ static void tool_rule_list(const char *args, char *result, int result_len) {
         if (count > 0) w += snprintf(result + w, result_len - w, "; ");
 
         uint32_t ago = r->last_triggered ? (millis() - r->last_triggered) / 1000 : 0;
-        w += snprintf(result + w, result_len - w,
-            "%s '%s' %s %s%s %d val=%d %s last=%us",
-            r->id, r->name,
-            r->enabled ? "ON" : "OFF",
-            r->sensor_name[0] ? r->sensor_name : "pin",
-            r->sensor_name[0] ? "" : "",
-            (int)r->threshold,
-            (int)r->last_reading,
-            r->fired ? "FIRED" : "idle",
-            (unsigned)ago);
+        if (r->condition == COND_CHAINED) {
+            w += snprintf(result + w, result_len - w,
+                "%s '%s' %s chained %s last=%us",
+                r->id, r->name,
+                r->enabled ? "ON" : "OFF",
+                r->fired ? "FIRED" : "idle",
+                (unsigned)ago);
+        } else {
+            w += snprintf(result + w, result_len - w,
+                "%s '%s' %s %s%s %d val=%d %s last=%us",
+                r->id, r->name,
+                r->enabled ? "ON" : "OFF",
+                r->sensor_name[0] ? r->sensor_name : "pin",
+                r->sensor_name[0] ? "" : "",
+                (int)r->threshold,
+                (int)r->last_reading,
+                r->fired ? "FIRED" : "idle",
+                (unsigned)ago);
+        }
+        if (r->chain_id[0]) {
+            w += snprintf(result + w, result_len - w, " ->%s(%us)",
+                          r->chain_id, (unsigned)(r->chain_delay_ms / 1000));
+        }
+        if (r->chain_off_id[0]) {
+            w += snprintf(result + w, result_len - w, " off->%s(%us)",
+                          r->chain_off_id, (unsigned)(r->chain_off_delay_ms / 1000));
+        }
         count++;
     }
 
@@ -841,6 +907,207 @@ static void tool_remote_chat(const char *args, char *result, int result_len) {
 }
 
 /*============================================================================
+ * Chain Create — multi-step chain in one call
+ *============================================================================*/
+
+/* Helper: parse step action params from prefixed keys */
+static void parseStepAction(const char *args, const char *prefix,
+                            ActionType &action, uint8_t &pin, int32_t &value,
+                            char *nats_subj, int subj_len,
+                            char *nats_pay, int pay_len,
+                            char *actuator, int act_len) {
+    char key[32];
+
+    /* action */
+    snprintf(key, sizeof(key), "%s_action", prefix);
+    char act_str[24] = "";
+    jsonArgString(args, key, act_str, sizeof(act_str));
+    if (act_str[0]) action = parseActionType(act_str);
+
+    /* message — used for telegram, nats_publish, serial_send */
+    snprintf(key, sizeof(key), "%s_message", prefix);
+    jsonArgString(args, key, nats_pay, pay_len);
+
+    /* nats_subject */
+    snprintf(key, sizeof(key), "%s_nats_subject", prefix);
+    jsonArgString(args, key, nats_subj, subj_len);
+
+    /* actuator name */
+    snprintf(key, sizeof(key), "%s_actuator", prefix);
+    jsonArgString(args, key, actuator, act_len);
+
+    /* pin / value */
+    snprintf(key, sizeof(key), "%s_pin", prefix);
+    pin = (uint8_t)jsonArgInt(args, key, 0);
+    snprintf(key, sizeof(key), "%s_value", prefix);
+    value = jsonArgInt(args, key, 1);
+
+    /* RGB packing for led_set */
+    if (action == ACT_LED_SET) {
+        snprintf(key, sizeof(key), "%s_r", prefix);
+        if (jsonArgExists(args, key)) {
+            int r = constrain(jsonArgInt(args, key, 0), 0, 255);
+            snprintf(key, sizeof(key), "%s_g", prefix);
+            int g = constrain(jsonArgInt(args, key, 0), 0, 255);
+            snprintf(key, sizeof(key), "%s_b", prefix);
+            int b = constrain(jsonArgInt(args, key, 0), 0, 255);
+            value = (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+/* Helper: format action name for result string */
+static int fmtStepAction(char *buf, int len, ActionType action, int32_t value,
+                         const char *message) {
+    switch (action) {
+        case ACT_LED_SET: {
+            int r = (value >> 16) & 0xFF;
+            int g = (value >> 8) & 0xFF;
+            int b = value & 0xFF;
+            return snprintf(buf, len, "LED(%d,%d,%d)", r, g, b);
+        }
+        case ACT_TELEGRAM:
+            return snprintf(buf, len, "telegram");
+        case ACT_GPIO_WRITE:
+            return snprintf(buf, len, "gpio(%d)", (int)value);
+        case ACT_NATS_PUBLISH:
+            return snprintf(buf, len, "nats");
+        case ACT_ACTUATOR:
+            return snprintf(buf, len, "actuator");
+        case ACT_SERIAL_SEND:
+            return snprintf(buf, len, "serial");
+        default:
+            return snprintf(buf, len, "?");
+    }
+}
+
+static void tool_chain_create(const char *args, char *result, int result_len) {
+    /* --- Parse trigger (source) params --- */
+    char sensor_name[DEV_NAME_LEN] = "";
+    if (!jsonArgString(args, "sensor_name", sensor_name, sizeof(sensor_name))) {
+        snprintf(result, result_len, "Error: missing 'sensor_name'");
+        return;
+    }
+    char cond_str[16] = "";
+    if (!jsonArgString(args, "condition", cond_str, sizeof(cond_str))) {
+        snprintf(result, result_len, "Error: missing 'condition'");
+        return;
+    }
+    ConditionOp condition = parseConditionOp(cond_str);
+    int32_t threshold = jsonArgInt(args, "threshold", 0);
+    int interval_s = jsonArgInt(args, "interval_seconds", 5);
+    if (interval_s < 5) interval_s = 5;
+    uint32_t interval_ms = (uint32_t)interval_s * 1000;
+
+    /* Validate sensor */
+    Device *dev = deviceFind(sensor_name);
+    if (!dev) {
+        snprintf(result, result_len, "Error: sensor '%s' not found", sensor_name);
+        return;
+    }
+
+    /* --- Parse step actions --- */
+    struct StepInfo {
+        ActionType action;
+        uint8_t pin;
+        int32_t value;
+        char nats_subj[RULE_NATS_SUBJ_LEN];
+        char nats_pay[RULE_NATS_PAY_LEN];
+        char actuator[DEV_NAME_LEN];
+        uint32_t delay_ms;
+        bool used;
+    };
+    static const char *prefixes[5] = {"step1","step2","step3","step4","step5"};
+    StepInfo steps[5];
+    memset(steps, 0, sizeof(steps));
+
+    /* Parse all steps — step1 and step2 required, step3-5 optional */
+    for (int s = 0; s < 5; s++) {
+        char key[32], act_str[24] = "";
+        snprintf(key, sizeof(key), "%s_action", prefixes[s]);
+        jsonArgString(args, key, act_str, sizeof(act_str));
+
+        if (!act_str[0]) {
+            if (s < 2) {
+                snprintf(result, result_len, "Error: missing '%s'", key);
+                return;
+            }
+            break;  /* no more steps */
+        }
+        steps[s].used = true;
+        if (s > 0) {
+            snprintf(key, sizeof(key), "%s_delay", prefixes[s]);
+            steps[s].delay_ms = (uint32_t)jsonArgInt(args, key, 0) * 1000;
+        }
+        parseStepAction(args, prefixes[s], steps[s].action, steps[s].pin, steps[s].value,
+                        steps[s].nats_subj, RULE_NATS_SUBJ_LEN,
+                        steps[s].nats_pay, RULE_NATS_PAY_LEN,
+                        steps[s].actuator, DEV_NAME_LEN);
+    }
+
+    int num_steps = 0;
+    for (int s = 0; s < 5; s++) { if (steps[s].used) num_steps = s + 1; }
+
+    /* --- Create rules end-first --- */
+    const char *ids[5] = {nullptr};
+
+    /* Create from last step backwards */
+    for (int i = num_steps - 1; i >= 0; i--) {
+        StepInfo &s = steps[i];
+        const char *chain_id = nullptr;
+        uint32_t chain_delay = 0;
+
+        /* If not the last step, chain to the next step */
+        if (i < num_steps - 1) {
+            chain_id = ids[i + 1];
+            chain_delay = steps[i + 1].delay_ms;  /* delay BEFORE next step fires */
+        }
+
+        bool is_source = (i == 0);
+        char name[RULE_NAME_LEN];
+        snprintf(name, sizeof(name), "%s step%d", sensor_name, i + 1);
+
+        const char *id = ruleCreate(
+            name,
+            is_source ? sensor_name : "",   /* sensor only on source */
+            PIN_NONE, false,
+            is_source ? condition : COND_CHAINED,
+            is_source ? threshold : 0,
+            interval_ms,
+            s.action, s.actuator, s.pin, s.value,
+            s.nats_subj, s.nats_pay,
+            false, ACT_GPIO_WRITE, "", 0, 0, "", "",  /* no off action */
+            chain_id, chain_delay,
+            nullptr, 0  /* no off-chain */
+        );
+
+        if (!id) {
+            snprintf(result, result_len, "Error: max rules reached at step %d", i + 1);
+            return;
+        }
+        ids[i] = id;
+    }
+
+    rulesSave();
+
+    /* --- Build result: "Chain: rule_03 test>50 -> telegram -> 10s -> LED(255,0,0) -> 10s -> LED(0,0,0)" --- */
+    int w = snprintf(result, result_len, "Chain created: %s %s>%d",
+                     ids[0], sensor_name, (int)threshold);
+
+    for (int i = 0; i < num_steps && w < result_len - 40; i++) {
+        char act_buf[32];
+        fmtStepAction(act_buf, sizeof(act_buf), steps[i].action, steps[i].value,
+                      steps[i].nats_pay);
+        if (i > 0 && steps[i].delay_ms > 0) {
+            w += snprintf(result + w, result_len - w, " -> %us -> %s",
+                          (unsigned)(steps[i].delay_ms / 1000), act_buf);
+        } else {
+            w += snprintf(result + w, result_len - w, " -> %s", act_buf);
+        }
+    }
+}
+
+/*============================================================================
  * Public API
  *============================================================================*/
 
@@ -890,6 +1157,8 @@ bool toolExecute(const char *name, const char *args_json,
         tool_serial_send(args_json, result, result_len);
     } else if (strcmp(name, "remote_chat") == 0) {
         tool_remote_chat(args_json, result, result_len);
+    } else if (strcmp(name, "chain_create") == 0) {
+        tool_chain_create(args_json, result, result_len);
     } else {
         snprintf(result, result_len, "Error: unknown tool '%s'", name);
         return false;

@@ -44,7 +44,7 @@ static char cfg_telegram_token[64];
 static char cfg_telegram_chat_id[16];
 static char cfg_system_prompt[4096];
 static char cfg_timezone[64];
-int cfg_telegram_cooldown = 60;  /* seconds, 0 = disabled */
+int cfg_telegram_cooldown = 3;  /* seconds, 0 = disabled */
 
 /* Placeholder defaults - overridden by LittleFS config.json */
 static void configDefaults() {
@@ -379,7 +379,7 @@ bool connectWiFi() {
 
 /* Static storage for tool call results (persists across loop iterations) */
 static char toolResultBufs[LLM_MAX_TOOL_CALLS][TOOL_RESULT_MAX_LEN];
-static char toolCallJsonBuf[1024]; /* copy of tool_calls_json for message building */
+static char toolCallJsonBuf[4096]; /* copy of tool_calls_json for message building */
 static char memoryBuf[512]; /* persistent AI memory from /memory.txt */
 
 /**
@@ -590,8 +590,11 @@ static void onNatsChat(nats_client_t *client, const nats_msg_t *msg,
     Serial.printf("> ");
 }
 
-/* Shared command response buffer (NATS + Telegram, single-threaded so safe) */
-static char cmdResponseBuf[512];
+/* Forward declaration (defined in Telegram section, needed by handleCommand) */
+extern bool g_telegram_enabled;
+
+/* Shared command response buffer (NATS + Telegram + Serial, single-threaded so safe) */
+static char cmdResponseBuf[1024];
 
 /**
  * Execute a device command, writing compact result to buf.
@@ -601,8 +604,14 @@ static char cmdResponseBuf[512];
 static bool handleCommand(const char *cmd, char *buf, int buf_len) {
     if (strcmp(cmd, "status") == 0) {
         snprintf(buf, buf_len,
-            "WiFi: %s (%s), Heap: %u/%u, History: %d, Model: %s, "
-            "Debug: %s, NATS: %s, Uptime: %lus",
+            "WiFi: %s (%s)\n"
+            "Heap: %u / %u\n"
+            "History: %d turns\n"
+            "Model: %s\n"
+            "Debug: %s\n"
+            "NATS: %s\n"
+            "Telegram: %s\n"
+            "Uptime: %lus",
             WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
             WiFi.localIP().toString().c_str(),
             ESP.getFreeHeap(), ESP.getHeapSize(),
@@ -611,6 +620,7 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
             g_nats_enabled
                 ? (g_nats_connected ? "connected" : "disconnected")
                 : "disabled",
+            g_telegram_enabled ? "enabled" : "disabled",
             millis() / 1000);
         return true;
     }
@@ -635,22 +645,27 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
         for (int i = 0; i < MAX_DEVICES && w < buf_len - 80; i++) {
             if (!devs[i].used) continue;
             const Device *d = &devs[i];
-            if (w > 0) w += snprintf(buf + w, buf_len - w, "; ");
+            if (w > 0) w += snprintf(buf + w, buf_len - w, "\n");
             if (d->kind == DEV_SENSOR_SERIAL_TEXT) {
                 float val = deviceReadSensor(d);
                 w += snprintf(buf + w, buf_len - w,
-                    "%s[serial %ubaud]=%.1f%s", d->name, (unsigned)d->baud, val, d->unit);
+                    "%s [serial_text] %ubaud = %.1f %s",
+                    d->name, (unsigned)d->baud, val, d->unit);
             } else if (d->kind == DEV_SENSOR_NATS_VALUE) {
                 float val = deviceReadSensor(d);
                 w += snprintf(buf + w, buf_len - w,
-                    "%s[%s]=%.1f%s", d->name, d->nats_subject, val, d->unit);
+                    "%s [nats_value] %s = %.1f %s",
+                    d->name, d->nats_subject, val, d->unit);
             } else if (deviceIsSensor(d->kind)) {
                 float val = deviceReadSensor(d);
                 w += snprintf(buf + w, buf_len - w,
-                    "%s=%.1f%s", d->name, val, d->unit);
+                    "%s [%s] pin=%d = %.1f %s",
+                    d->name, deviceKindName(d->kind), d->pin, val, d->unit);
             } else {
                 w += snprintf(buf + w, buf_len - w,
-                    "%s(%s)", d->name, deviceKindName(d->kind));
+                    "%s [%s] pin=%d%s",
+                    d->name, deviceKindName(d->kind), d->pin,
+                    d->inverted ? " (inverted)" : "");
             }
         }
         if (w == 0) snprintf(buf, buf_len, "No devices");
@@ -659,14 +674,68 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
     if (strcmp(cmd, "rules") == 0) {
         int w = 0;
         const Rule *rules = ruleGetAll();
-        for (int i = 0; i < MAX_RULES && w < buf_len - 60; i++) {
+        for (int i = 0; i < MAX_RULES && w < buf_len - 120; i++) {
             if (!rules[i].used) continue;
             const Rule *r = &rules[i];
-            if (w > 0) w += snprintf(buf + w, buf_len - w, "; ");
+            if (w > 0) w += snprintf(buf + w, buf_len - w, "\n");
+            /* Header: id 'name' [ON] sensor cond threshold val=X state */
             w += snprintf(buf + w, buf_len - w,
-                "%s '%s' %s val=%d %s",
-                r->id, r->name, r->enabled ? "ON" : "OFF",
-                (int)r->last_reading, r->fired ? "FIRED" : "idle");
+                "%s '%s' [%s] %s %s %d val=%d %s",
+                r->id, r->name,
+                r->enabled ? "ON" : "OFF",
+                r->sensor_name[0] ? r->sensor_name :
+                    (r->condition == COND_CHAINED ? "" : "gpio"),
+                conditionOpName(r->condition),
+                (int)r->threshold,
+                (int)r->last_reading,
+                r->fired ? "FIRED" : "idle");
+            /* ON action */
+            w += snprintf(buf + w, buf_len - w, "\n  on: %s",
+                          actionTypeName(r->on_action));
+            if (r->on_action == ACT_LED_SET) {
+                int32_t v = r->on_value;
+                w += snprintf(buf + w, buf_len - w,
+                    "(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
+            } else if (r->on_action == ACT_TELEGRAM
+                       || r->on_action == ACT_NATS_PUBLISH
+                       || r->on_action == ACT_SERIAL_SEND) {
+                w += snprintf(buf + w, buf_len - w, " \"%s\"", r->on_nats_pay);
+            } else if (r->on_action == ACT_ACTUATOR) {
+                w += snprintf(buf + w, buf_len - w, " %s", r->on_actuator);
+            } else if (r->on_action == ACT_GPIO_WRITE) {
+                w += snprintf(buf + w, buf_len - w,
+                    " pin=%d val=%d", r->on_pin, (int)r->on_value);
+            }
+            /* OFF action */
+            if (r->has_off_action) {
+                w += snprintf(buf + w, buf_len - w, "\n  off: %s",
+                              actionTypeName(r->off_action));
+                if (r->off_action == ACT_LED_SET) {
+                    int32_t v = r->off_value;
+                    w += snprintf(buf + w, buf_len - w,
+                        "(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
+                } else if (r->off_action == ACT_TELEGRAM
+                           || r->off_action == ACT_NATS_PUBLISH
+                           || r->off_action == ACT_SERIAL_SEND) {
+                    w += snprintf(buf + w, buf_len - w,
+                        " \"%s\"", r->off_nats_pay);
+                } else if (r->off_action == ACT_ACTUATOR) {
+                    w += snprintf(buf + w, buf_len - w,
+                        " %s", r->off_actuator);
+                } else if (r->off_action == ACT_GPIO_WRITE) {
+                    w += snprintf(buf + w, buf_len - w,
+                        " pin=%d val=%d", r->off_pin, (int)r->off_value);
+                }
+            }
+            /* Chain links */
+            if (r->chain_id[0])
+                w += snprintf(buf + w, buf_len - w,
+                    "\n  chain: ->%s (%us)",
+                    r->chain_id, (unsigned)(r->chain_delay_ms / 1000));
+            if (r->chain_off_id[0])
+                w += snprintf(buf + w, buf_len - w,
+                    "\n  chain-off: ->%s (%us)",
+                    r->chain_off_id, (unsigned)(r->chain_off_delay_ms / 1000));
         }
         if (w == 0) snprintf(buf, buf_len, "No rules");
         return true;
@@ -694,11 +763,15 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
             snprintf(buf, buf_len, "No conversation history");
             return true;
         }
-        int w = snprintf(buf, buf_len, "History: %d turns. ", historyCount);
-        for (int i = 0; i < historyCount && w < buf_len - 60; i++) {
-            w += snprintf(buf + w, buf_len - w, "[%d] %.40s%s ",
+        int w = snprintf(buf, buf_len, "History: %d turns\n", historyCount);
+        for (int i = 0; i < historyCount && w < buf_len - 80; i++) {
+            int alen = strlen(history[i].assistant);
+            w += snprintf(buf + w, buf_len - w,
+                "[%d] %.40s%s\n  -> %.60s%s\n",
                 i + 1, history[i].user,
-                strlen(history[i].user) > 40 ? "..." : "");
+                strlen(history[i].user) > 40 ? "..." : "",
+                history[i].assistant,
+                alen > 60 ? "..." : "");
         }
         return true;
     }
@@ -1226,44 +1299,7 @@ static void telegramTick() {
  *============================================================================*/
 
 void handleSerialCommand(const char *input) {
-    if (strcmp(input, "/status") == 0) {
-        Serial.printf("--- esp-claw status ---\n");
-        Serial.printf("WiFi: %s (%s)\n",
-                      WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
-                      WiFi.localIP().toString().c_str());
-        Serial.printf("Heap: %u free / %u total\n",
-                      ESP.getFreeHeap(), ESP.getHeapSize());
-        Serial.printf("History: %d turns\n", historyCount);
-        Serial.printf("Model: %s\n", cfg_model);
-        Serial.printf("Debug: %s\n", g_debug ? "ON" : "OFF");
-        Serial.printf("NATS: %s\n", g_nats_enabled
-            ? (g_nats_connected ? "connected" : "disconnected")
-            : "disabled");
-        Serial.printf("Telegram: %s\n", g_telegram_enabled ? "enabled" : "disabled");
-        Serial.printf("Uptime: %lus\n", millis() / 1000);
-        Serial.printf("> ");
-        return;
-    }
-
-    if (strcmp(input, "/clear") == 0) {
-        historyCount = 0;
-        LittleFS.remove(HISTORY_FILE);
-        Serial.printf("Conversation history cleared.\n> ");
-        return;
-    }
-
-    if (strcmp(input, "/heap") == 0) {
-        Serial.printf("Free heap: %u bytes\n> ", ESP.getFreeHeap());
-        return;
-    }
-
-    if (strcmp(input, "/reboot") == 0) {
-        Serial.printf("Rebooting...\n");
-        delay(500);
-        ESP.restart();
-        return;
-    }
-
+    /* Serial-only commands (not available via Telegram/NATS) */
     if (strcmp(input, "/config") == 0) {
         Serial.printf("--- config ---\n");
         Serial.printf("WiFi SSID: %s\n", cfg_wifi_ssid);
@@ -1283,8 +1319,7 @@ void handleSerialCommand(const char *input) {
         return;
     }
 
-    if (strcmp(input, "/history") == 0 || strcmp(input, "/history full") == 0) {
-        bool full = (strcmp(input, "/history full") == 0);
+    if (strcmp(input, "/history full") == 0) {
         if (historyCount == 0) {
             Serial.printf("No conversation history.\n> ");
             return;
@@ -1292,144 +1327,9 @@ void handleSerialCommand(const char *input) {
         Serial.printf("--- history (%d turns) ---\n", historyCount);
         for (int i = 0; i < historyCount; i++) {
             Serial.printf("[%d] User: %s\n", i + 1, history[i].user);
-            if (full) {
-                Serial.printf("[%d] Assistant: %s\n\n", i + 1, history[i].assistant);
-            } else {
-                int len = strlen(history[i].assistant);
-                if (len > 200) {
-                    Serial.printf("[%d] Assistant: %.200s... (%d chars)\n\n",
-                                  i + 1, history[i].assistant, len);
-                } else {
-                    Serial.printf("[%d] Assistant: %s\n\n", i + 1, history[i].assistant);
-                }
-            }
+            Serial.printf("[%d] Assistant: %s\n\n", i + 1, history[i].assistant);
         }
         Serial.printf("---\n> ");
-        return;
-    }
-
-    if (strcmp(input, "/memory") == 0) {
-        static char memBuf[512];
-        int len = readFile("/memory.txt", memBuf, sizeof(memBuf));
-        if (len > 0) {
-            Serial.printf("--- memory (%d bytes) ---\n%s\n---\n> ", len, memBuf);
-        } else {
-            Serial.printf("(no memory file)\n> ");
-        }
-        return;
-    }
-
-    if (strcmp(input, "/time") == 0) {
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo, 0)) {
-            Serial.printf("%04d-%02d-%02d %02d:%02d:%02d (TZ=%s)\n> ",
-                          timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-                          cfg_timezone);
-        } else {
-            Serial.printf("NTP not synced yet\n> ");
-        }
-        return;
-    }
-
-    if (strcmp(input, "/debug") == 0) {
-        g_debug = !g_debug;
-        Serial.printf("Debug %s\n> ", g_debug ? "ON" : "OFF");
-        return;
-    }
-
-    if (strcmp(input, "/devices") == 0) {
-        const Device *devs = deviceGetAll();
-        int count = 0;
-        Serial.printf("--- devices ---\n");
-        for (int i = 0; i < MAX_DEVICES; i++) {
-            if (!devs[i].used) continue;
-            const Device *d = &devs[i];
-            if (d->kind == DEV_SENSOR_SERIAL_TEXT) {
-                float val = deviceReadSensor(d);
-                Serial.printf("  %s [serial_text] %ubaud  = %.1f %s  msg='%s'\n",
-                              d->name, (unsigned)d->baud, val, d->unit,
-                              serialTextGetMsg());
-            } else if (d->kind == DEV_SENSOR_NATS_VALUE) {
-                float val = deviceReadSensor(d);
-                Serial.printf("  %s [nats_value] nats=%s  = %.1f %s\n",
-                              d->name, d->nats_subject, val, d->unit);
-            } else if (deviceIsSensor(d->kind)) {
-                float val = deviceReadSensor(d);
-                Serial.printf("  %s [%s] pin=%d  = %.1f %s\n",
-                              d->name, deviceKindName(d->kind), d->pin, val, d->unit);
-            } else {
-                Serial.printf("  %s [%s] pin=%d%s\n",
-                              d->name, deviceKindName(d->kind), d->pin,
-                              d->inverted ? " (inverted)" : "");
-            }
-            count++;
-        }
-        if (count == 0) Serial.printf("  (none)\n");
-        Serial.printf("---\n> ");
-        return;
-    }
-
-    if (strcmp(input, "/rules") == 0) {
-        const Rule *rules = ruleGetAll();
-        int count = 0;
-        Serial.printf("--- rules ---\n");
-        for (int i = 0; i < MAX_RULES; i++) {
-            if (!rules[i].used) continue;
-            const Rule *r = &rules[i];
-            Serial.printf("  %s '%s' [%s] %s %s %d val=%d %s\n",
-                          r->id, r->name,
-                          r->enabled ? "ON" : "OFF",
-                          r->sensor_name[0] ? r->sensor_name : "gpio",
-                          conditionOpName(r->condition),
-                          (int)r->threshold,
-                          (int)r->last_reading,
-                          r->fired ? "FIRED" : "idle");
-            Serial.printf("    on:  %s", actionTypeName(r->on_action));
-            if (r->on_action == ACT_LED_SET) {
-                int32_t v = r->on_value;
-                Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
-            } else if (r->on_action == ACT_TELEGRAM || r->on_action == ACT_NATS_PUBLISH
-                       || r->on_action == ACT_SERIAL_SEND) {
-                Serial.printf(" \"%s\"", r->on_nats_pay);
-            } else if (r->on_action == ACT_ACTUATOR) {
-                Serial.printf(" %s", r->on_actuator);
-            } else if (r->on_action == ACT_GPIO_WRITE) {
-                Serial.printf(" pin=%d val=%d", r->on_pin, (int)r->on_value);
-            }
-            Serial.printf("\n");
-            if (r->has_off_action) {
-                Serial.printf("    off: %s", actionTypeName(r->off_action));
-                if (r->off_action == ACT_LED_SET) {
-                    int32_t v = r->off_value;
-                    Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
-                } else if (r->off_action == ACT_TELEGRAM || r->off_action == ACT_NATS_PUBLISH
-                           || r->off_action == ACT_SERIAL_SEND) {
-                    Serial.printf(" \"%s\"", r->off_nats_pay);
-                } else if (r->off_action == ACT_ACTUATOR) {
-                    Serial.printf(" %s", r->off_actuator);
-                } else if (r->off_action == ACT_GPIO_WRITE) {
-                    Serial.printf(" pin=%d val=%d", r->off_pin, (int)r->off_value);
-                }
-                Serial.printf("\n");
-            }
-            count++;
-        }
-        if (count == 0) Serial.printf("  (none)\n");
-        Serial.printf("---\n> ");
-        return;
-    }
-
-    if (strncmp(input, "/model", 6) == 0) {
-        if (input[6] == '\0') {
-            Serial.printf("Model: %s\n> ", cfg_model);
-        } else if (input[6] == ' ' && input[7] != '\0') {
-            strncpy(cfg_model, input + 7, sizeof(cfg_model) - 1);
-            cfg_model[sizeof(cfg_model) - 1] = '\0';
-            Serial.printf("Model changed to: %s\n> ", cfg_model);
-        } else {
-            Serial.printf("Usage: /model [model-name]\n> ");
-        }
         return;
     }
 
@@ -1439,27 +1339,13 @@ void handleSerialCommand(const char *input) {
         return;
     }
 
-    if (strcmp(input, "/help") == 0) {
-        Serial.printf("--- esp-claw commands ---\n");
-        Serial.printf("  /status  - Show device status\n");
-        Serial.printf("  /config  - Show loaded config (serial only)\n");
-        Serial.printf("  /prompt  - Show system prompt (serial only)\n");
-        Serial.printf("  /history - Show conversation history (add 'full' for complete text)\n");
-        Serial.printf("  /clear   - Clear conversation history\n");
-        Serial.printf("  /devices - List registered devices with readings\n");
-        Serial.printf("  /rules   - List automation rules with status\n");
-        Serial.printf("  /memory  - Show AI persistent memory\n");
-        Serial.printf("  /time    - Show current time and timezone\n");
-        Serial.printf("  /heap    - Show free memory\n");
-        Serial.printf("  /debug   - Toggle debug output\n");
-        Serial.printf("  /model   - Show/change LLM model (e.g. /model anthropic/claude-haiku)\n");
-        Serial.printf("  /setup   - Start WiFi setup portal (serial only)\n");
-        Serial.printf("  /reboot  - Restart ESP32\n");
-        Serial.printf("  /help    - This help\n");
-        Serial.printf("  (anything else) - Chat with AI\n");
-        Serial.printf("  Commands also work via Telegram and NATS.\n");
-        Serial.printf("> ");
-        return;
+    /* Shared commands — delegate to handleCommand() */
+    if (input[0] == '/') {
+        const char *cmd = input + 1;
+        if (handleCommand(cmd, cmdResponseBuf, sizeof(cmdResponseBuf))) {
+            Serial.printf("%s\n> ", cmdResponseBuf);
+            return;
+        }
     }
 
     /* Unknown command - treat as chat */

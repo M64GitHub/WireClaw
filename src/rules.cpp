@@ -36,7 +36,8 @@ const char *conditionOpName(ConditionOp op) {
         case COND_EQ:     return "eq";
         case COND_NEQ:    return "neq";
         case COND_CHANGE: return "change";
-        case COND_ALWAYS: return "always";
+        case COND_ALWAYS:  return "always";
+        case COND_CHAINED: return "chained";
         default:          return "?";
     }
 }
@@ -48,6 +49,7 @@ static ConditionOp conditionFromString(const char *s) {
     if (strcmp(s, "neq") == 0)    return COND_NEQ;
     if (strcmp(s, "change") == 0) return COND_CHANGE;
     if (strcmp(s, "always") == 0) return COND_ALWAYS;
+    if (strcmp(s, "chained") == 0) return COND_CHAINED;
     return COND_GT;
 }
 
@@ -97,7 +99,9 @@ const char *ruleCreate(const char *name, const char *sensor_name, uint8_t sensor
                        const char *on_nats_subj, const char *on_nats_pay,
                        bool has_off, ActionType off_action, const char *off_actuator,
                        uint8_t off_pin, int32_t off_value,
-                       const char *off_nats_subj, const char *off_nats_pay) {
+                       const char *off_nats_subj, const char *off_nats_pay,
+                       const char *chain_id, uint32_t chain_delay_ms,
+                       const char *chain_off_id, uint32_t chain_off_delay_ms) {
     /* Find free slot */
     int slot = -1;
     for (int i = 0; i < MAX_RULES; i++) {
@@ -152,6 +156,26 @@ const char *ruleCreate(const char *name, const char *sensor_name, uint8_t sensor
         if (off_nats_pay && off_nats_pay[0])
             strncpy(r->off_nats_pay, off_nats_pay, RULE_NATS_PAY_LEN - 1);
     }
+
+    /* Chain — reject self-reference */
+    if (chain_id && chain_id[0]) {
+        if (strcmp(chain_id, r->id) == 0) {
+            Serial.printf("[Rule] Warning: chain_id '%s' is self-reference, ignored\n", chain_id);
+        } else {
+            strncpy(r->chain_id, chain_id, RULE_ID_LEN - 1);
+            r->chain_id[RULE_ID_LEN - 1] = '\0';
+        }
+    }
+    r->chain_delay_ms = chain_delay_ms;
+    if (chain_off_id && chain_off_id[0]) {
+        if (strcmp(chain_off_id, r->id) == 0) {
+            Serial.printf("[Rule] Warning: chain_off_id '%s' is self-reference, ignored\n", chain_off_id);
+        } else {
+            strncpy(r->chain_off_id, chain_off_id, RULE_ID_LEN - 1);
+            r->chain_off_id[RULE_ID_LEN - 1] = '\0';
+        }
+    }
+    r->chain_off_delay_ms = chain_off_delay_ms;
 
     r->fired = false;
     r->last_eval = 0;
@@ -346,6 +370,79 @@ static uint32_t msgHash(const char *s) {
 }
 
 /*============================================================================
+ * Chain Queue - delayed rule triggering
+ *============================================================================*/
+
+struct PendingChain {
+    char target_id[RULE_ID_LEN];
+    uint32_t fire_at;   /* millis() when to fire */
+    bool used;
+};
+
+static PendingChain g_pending_chains[MAX_PENDING_CHAINS];
+
+static bool chainEnqueue(const char *target_id, uint32_t delay_ms) {
+    /* Deduplicate: same target can't be queued twice */
+    for (int i = 0; i < MAX_PENDING_CHAINS; i++) {
+        if (g_pending_chains[i].used &&
+            strcmp(g_pending_chains[i].target_id, target_id) == 0) {
+            if (g_debug) Serial.printf("[Chain] %s already pending, skipping\n", target_id);
+            return false;
+        }
+    }
+
+    /* Reset fired state on COND_CHAINED targets so they can fire again */
+    Rule *target = ruleFind(target_id);
+    if (target && target->condition == COND_CHAINED) {
+        target->fired = false;
+    }
+
+    for (int i = 0; i < MAX_PENDING_CHAINS; i++) {
+        if (!g_pending_chains[i].used) {
+            strncpy(g_pending_chains[i].target_id, target_id, RULE_ID_LEN - 1);
+            g_pending_chains[i].target_id[RULE_ID_LEN - 1] = '\0';
+            g_pending_chains[i].fire_at = millis() + delay_ms;
+            g_pending_chains[i].used = true;
+            if (g_debug) Serial.printf("[Chain] Queued %s in %ums\n", target_id, delay_ms);
+            return true;
+        }
+    }
+    Serial.printf("[Chain] Queue full, dropping %s\n", target_id);
+    return false;
+}
+
+/* Process pending chains - fires ready ones, returns count fired */
+static int chainProcessPending() {
+    uint32_t now = millis();
+    int fired = 0;
+    for (int i = 0; i < MAX_PENDING_CHAINS; i++) {
+        if (!g_pending_chains[i].used) continue;
+        if ((int32_t)(now - g_pending_chains[i].fire_at) >= 0) {
+            Rule *target = ruleFind(g_pending_chains[i].target_id);
+            if (target && target->used && target->enabled) {
+                if (g_debug) Serial.printf("[Chain] Firing %s '%s'\n",
+                                           target->id, target->name);
+                executeAction(target, true);
+                target->last_triggered = now;
+                publishRuleEvent(target, true);
+                Serial.printf("[Rule] %s '%s' CHAIN-TRIGGERED\n", target->id, target->name);
+
+                /* If chain target itself has a chain, enqueue it */
+                if (target->chain_id[0]) {
+                    chainEnqueue(target->chain_id, target->chain_delay_ms);
+                }
+            } else {
+                if (g_debug) Serial.printf("[Chain] Target %s not found/disabled, skipping\n",
+                                           g_pending_chains[i].target_id);
+            }
+            g_pending_chains[i].used = false;
+            fired++;
+        }
+    }
+    return fired;
+}
+
+/*============================================================================
  * Evaluation
  *============================================================================*/
 
@@ -360,6 +457,9 @@ void rulesEvaluate() {
     for (int i = 0; i < MAX_RULES; i++) {
         Rule *r = &g_rules[i];
         if (!r->used || !r->enabled) continue;
+
+        /* COND_CHAINED rules only fire via chain queue, skip normal eval */
+        if (r->condition == COND_CHAINED) continue;
 
         /* Throttle by interval */
         if (now - r->last_eval < r->interval_ms) continue;
@@ -442,6 +542,7 @@ void rulesEvaluate() {
             executeAction(r, true);
             r->last_triggered = now;
             publishRuleEvent(r, true);
+            if (r->chain_id[0]) chainEnqueue(r->chain_id, r->chain_delay_ms);
             if (g_debug) Serial.printf("[Rule] %s '%s' PERIODIC (reading=%d)\n",
                                        r->id, r->name, (int)r->last_reading);
         }
@@ -451,6 +552,7 @@ void rulesEvaluate() {
             r->last_triggered = now;
             executeAction(r, true);
             publishRuleEvent(r, true);
+            if (r->chain_id[0]) chainEnqueue(r->chain_id, r->chain_delay_ms);
             Serial.printf("[Rule] %s '%s' TRIGGERED (reading=%d, threshold=%d)\n",
                           r->id, r->name, (int)r->last_reading, (int)r->threshold);
         } else if (!condition_met && r->fired) {
@@ -460,9 +562,23 @@ void rulesEvaluate() {
                 executeAction(r, false);
             }
             publishRuleEvent(r, false);
+            if (r->chain_off_id[0]) chainEnqueue(r->chain_off_id, r->chain_off_delay_ms);
             Serial.printf("[Rule] %s '%s' CLEARED (reading=%d)\n",
                           r->id, r->name, (int)r->last_reading);
         }
+    }
+
+    /* Process pending chain triggers with depth limit */
+    int depth = 0;
+    while (depth < MAX_CHAIN_DEPTH) {
+        int cfired = chainProcessPending();
+        if (cfired == 0) break;
+        depth += cfired;
+    }
+    if (depth >= MAX_CHAIN_DEPTH) {
+        Serial.printf("[Chain] Max depth %d reached, breaking chain\n", MAX_CHAIN_DEPTH);
+        for (int i = 0; i < MAX_PENDING_CHAINS; i++)
+            g_pending_chains[i].used = false;
     }
 }
 
@@ -533,6 +649,7 @@ void rulesSave() {
             "\"ons\":\"%s\",\"onp\":\"%s\","
             "\"ho\":%s,\"fa\":\"%s\",\"fac\":\"%s\",\"fp\":%d,\"fv\":%d,"
             "\"fns\":\"%s\",\"fnp\":\"%s\","
+            "\"ci\":\"%s\",\"cd\":%u,\"coi\":\"%s\",\"cod\":%u,"
             "\"en\":%s,\"lt\":%u}",
             r->id, r->name, r->sensor_name, r->sensor_pin,
             r->sensor_analog ? "true" : "false",
@@ -542,6 +659,8 @@ void rulesSave() {
             r->has_off_action ? "true" : "false",
             actionTypeName(r->off_action), r->off_actuator, r->off_pin, (int)r->off_value,
             r->off_nats_subj, r->off_nats_pay,
+            r->chain_id, (unsigned)r->chain_delay_ms,
+            r->chain_off_id, (unsigned)r->chain_off_delay_ms,
             r->enabled ? "true" : "false",
             (unsigned)r->last_triggered);
 
@@ -620,6 +739,11 @@ static void rulesLoad() {
         r->off_value = ruleJsonGetInt(objBuf, "fv", 0);
         ruleJsonGetString(objBuf, "fns", r->off_nats_subj, RULE_NATS_SUBJ_LEN);
         ruleJsonGetString(objBuf, "fnp", r->off_nats_pay, RULE_NATS_PAY_LEN);
+
+        ruleJsonGetString(objBuf, "ci", r->chain_id, RULE_ID_LEN);
+        r->chain_delay_ms = (uint32_t)ruleJsonGetInt(objBuf, "cd", 0);
+        ruleJsonGetString(objBuf, "coi", r->chain_off_id, RULE_ID_LEN);
+        r->chain_off_delay_ms = (uint32_t)ruleJsonGetInt(objBuf, "cod", 0);
 
         r->enabled = ruleJsonGetBool(objBuf, "en", true);
         r->last_triggered = (uint32_t)ruleJsonGetInt(objBuf, "lt", 0);

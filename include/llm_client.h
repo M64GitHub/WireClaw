@@ -58,7 +58,7 @@ struct LlmResult {
     int  tool_call_count;
 
     /* Raw tool_calls JSON for echoing back in next request */
-    char tool_calls_json[1024];
+    char tool_calls_json[4096];
 };
 
 class LlmClient {

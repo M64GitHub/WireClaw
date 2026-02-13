@@ -17,8 +17,10 @@
 #define RULE_NATS_SUBJ_LEN  64
 #define RULE_NATS_PAY_LEN   64
 #define RULE_ID_LEN         12
+#define MAX_PENDING_CHAINS  8
+#define MAX_CHAIN_DEPTH     8
 
-enum ConditionOp { COND_GT, COND_LT, COND_EQ, COND_NEQ, COND_CHANGE, COND_ALWAYS };
+enum ConditionOp { COND_GT, COND_LT, COND_EQ, COND_NEQ, COND_CHANGE, COND_ALWAYS, COND_CHAINED };
 enum ActionType  { ACT_GPIO_WRITE, ACT_LED_SET, ACT_NATS_PUBLISH, ACT_ACTUATOR, ACT_TELEGRAM, ACT_SERIAL_SEND };
 
 struct Rule {
@@ -57,6 +59,12 @@ struct Rule {
     uint32_t last_triggered;            /* millis() of last action fire, persisted */
     uint32_t last_telegram_ms;          /* runtime only, cooldown tracking */
 
+    /* Chain (optional: trigger another rule after action fires) */
+    char chain_id[RULE_ID_LEN];         /* ON-chain target rule ID, empty = no chain */
+    uint32_t chain_delay_ms;            /* delay before triggering ON-chain target */
+    char chain_off_id[RULE_ID_LEN];     /* OFF-chain target rule ID, empty = no chain */
+    uint32_t chain_off_delay_ms;        /* delay before triggering OFF-chain target */
+
     /* State */
     bool fired;                         /* runtime only */
     int32_t last_reading;               /* runtime only */
@@ -85,7 +93,10 @@ const char *ruleCreate(const char *name, const char *sensor_name, uint8_t sensor
                        /* OFF action */
                        bool has_off, ActionType off_action, const char *off_actuator,
                        uint8_t off_pin, int32_t off_value,
-                       const char *off_nats_subj, const char *off_nats_pay);
+                       const char *off_nats_subj, const char *off_nats_pay,
+                       /* Chain (optional) */
+                       const char *chain_id = nullptr, uint32_t chain_delay_ms = 0,
+                       const char *chain_off_id = nullptr, uint32_t chain_off_delay_ms = 0);
 
 /* Delete a rule by ID. "all" deletes everything. Returns true if found. */
 bool ruleDelete(const char *id);

@@ -349,6 +349,9 @@ int LlmClient::parseToolCalls(const char *body, int body_len, LlmResult *result)
     if (tc_json_len < (int)sizeof(result->tool_calls_json) - 1) {
         memcpy(result->tool_calls_json, arr_start, tc_json_len);
         result->tool_calls_json[tc_json_len] = '\0';
+    } else {
+        Serial.printf("[LLM] Warning: tool_calls_json too large (%d bytes, max %d)\n",
+                      tc_json_len, (int)sizeof(result->tool_calls_json) - 1);
     }
 
     /* Parse individual tool calls from the array */

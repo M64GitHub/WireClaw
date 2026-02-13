@@ -368,6 +368,48 @@ Verify with `/time`:
 2026-02-10 19:34:12 (TZ=CET-1CEST,M3.5.0,M10.5.0/3)
 ```
 
+### Example: Rule Chaining
+
+Rules can trigger other rules with delays, creating multi-step sequences. The `chain_create` tool handles everything in one call:
+
+```
+You:  "please send me a telegram message when the test sensor > 100,
+       then wait 5s, then send me another message "hello test",
+       then set the led to green, and after another 10s set the led off"
+
+WireClaw: "Perfect! I've created the automation chain (rule_08)."
+
+Serial Debug:
+  chain_create(sensor_name="test", condition="gt", threshold=100,
+    step1_action="telegram", step1_message="Test sensor exceeded 100: {value}",
+    step2_action="telegram", step2_delay=5, step2_message="hello test",
+    step3_action="led_set", step3_delay=0, step3_r=0, step3_g=255, step3_b=0,
+    step4_action="led_set", step4_delay=10, step4_r=0, step4_g=0, step4_b=0)
+
+  -> Chain created: rule_08 test>100 -> telegram -> 5s -> telegram -> LED(0,255,0) -> 10s -> LED(0,0,0)
+```
+
+When the sensor crosses the threshold:
+
+```
+[Rule] rule_08 'test step1' TRIGGERED (reading=1000, threshold=100)
+
+--- 5 seconds later ---
+
+[Rule] rule_07 'test step2' CHAIN-TRIGGERED
+[Rule] rule_06 'test step3' CHAIN-TRIGGERED
+
+--- 10 seconds later ---
+
+[Rule] rule_05 'test step4' CHAIN-TRIGGERED
+
+--- sensor drops back below threshold ---
+
+[Rule] rule_08 'test step1' CLEARED (reading=10)
+```
+
+One tool call creates 4 linked rules. Delays are non-blocking. The chain fires again the next time the sensor crosses the threshold. See [docs/RULE-CHAINING.md](docs/RULE-CHAINING.md) for the full reference.
+
 ### Example: Persistent Memory
 
 Tell the AI something, and it remembers - even across reboots:
@@ -440,12 +482,13 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 ## Features
 
 - **Rule Engine** - persistent local automation, evaluated every loop iteration, edge-triggered or periodic
+- **Rule Chaining** - `chain_create` tool builds multi-step sequences in one call (e.g. alert + LED change + auto-off), with non-blocking delays
 - **Time-Aware Rules** - NTP sync with POSIX timezone, `clock_hour`, `clock_minute`, and `clock_hhmm` virtual sensors for schedule-based automation
 - **Persistent Memory** - AI remembers user preferences, device nicknames, and observations across reboots
 - **Telegram Alerts** - rules send push notifications with live sensor values via `{device_name}` interpolation, no LLM in the loop
 - **Device Registry** - named sensors and actuators instead of raw pin numbers, persisted to flash
 - **Serial Bridge** - connect any serial device (Arduino, GPS, CO2 sensor) via UART1; read data as a sensor, send commands via `serial_send`, use in rules with `{name:msg}` interpolation
-- **AI Agent** - agentic loop with 19 tools, up to 5 iterations per message
+- **AI Agent** - agentic loop with 20 tools, up to 5 iterations per message
 - **Local LLM** - use a local server (Ollama, llama.cpp) over HTTP instead of cloud API
 - **Multi-Device Mesh** - devices talk to each other over NATS via `remote_chat`
 - **Telegram Bot** - chat with your ESP32 from your phone
@@ -616,6 +659,7 @@ Rules monitor a sensor, evaluate a condition, and trigger an action - all in the
 | `neq` | Sensor reading != threshold |
 | `change` | Sensor reading changed since last check |
 | `always` | Fire every interval (periodic) |
+| `chained` | Only fires when triggered by another rule's chain (see [Rule Chaining](docs/RULE-CHAINING.md)) |
 
 ### Sensor Sources
 
@@ -699,6 +743,7 @@ You just describe what you want in natural language. The AI picks the right para
 - **Sensor caching** - all rules monitoring the same sensor see the same value per evaluation cycle
 - **NATS events** - every rule trigger publishes to `{device_name}.events`
 - **Persistence** - rules survive reboots (`/rules.json`)
+- **Rule chaining** - `chain_create` builds multi-step sequences in one call (up to 5 steps with delays). Internally creates linked rules with `condition="chained"` that only fire via chain. For advanced use (OFF-chains, manual linking), `rule_create` with `chain_rule`/`chain_off_rule` is also available. Max depth 8. See [docs/RULE-CHAINING.md](docs/RULE-CHAINING.md)
 - **IDs** - auto-assigned: `rule_01`, `rule_02`, etc.
 
 ## Persistent Memory
@@ -779,6 +824,7 @@ Works with [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggergan
 | `/clear` | Clear conversation history |
 | `/heap` | Show free memory |
 | `/debug` | Toggle debug output |
+| `/model` | Show current LLM model, or `/model <name>` to switch at runtime |
 | `/setup` | Start WiFi setup portal for reconfiguration |
 | `/reboot` | Restart ESP32 |
 | `/help` | List commands |
@@ -1102,7 +1148,7 @@ Created automatically on flash, persisted across reboots:
 ## Resource Usage
 
 ```
-RAM:   55.4% (181KB of 320KB)
+RAM:   55.6% (182KB of 320KB)
 Flash: 37.4% (1.2MB of 3.3MB)
 ```
 
