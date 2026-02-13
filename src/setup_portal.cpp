@@ -18,7 +18,7 @@
 extern void led(uint8_t r, uint8_t g, uint8_t b);
 extern void ledOff();
 
-#define PORTAL_TIMEOUT_MS 300000 /* 5 minutes */
+#define PORTAL_TIMEOUT_MS 600000 /* 10 minutes */
 
 /*============================================================================
  * HTML Pages (stored in flash)
@@ -298,11 +298,24 @@ static bool handleClient(WiFiClient &client) {
  *============================================================================*/
 
 void runSetupPortal() {
+    /* Wait for serial monitor to connect (USB-CDC can be slow) */
+    Serial.printf("[Setup] Waiting for serial connection...\n");
+    unsigned long serialWait = millis();
+    while (!Serial && millis() - serialWait < 3000) {
+        delay(100);
+    }
+
     /* Switch to AP mode */
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
     WiFi.softAP("WireClaw-Setup");
     delay(500); /* Let AP settle */
+
+    /* Register with watchdog (setup() hasn't done this yet) */
+    esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 60000, .idle_core_mask = 0,
+                                       .trigger_panic = true };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+    esp_task_wdt_add(NULL);
 
     IPAddress apIP = WiFi.softAPIP();
     Serial.printf("[Setup] AP started on %s\n", apIP.toString().c_str());
