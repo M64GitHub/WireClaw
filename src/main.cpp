@@ -702,10 +702,22 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
         }
         return true;
     }
+    if (strncmp(cmd, "model", 5) == 0) {
+        if (cmd[5] == '\0') {
+            snprintf(buf, buf_len, "Model: %s", cfg_model);
+        } else if (cmd[5] == ' ' && cmd[6] != '\0') {
+            strncpy(cfg_model, cmd + 6, sizeof(cfg_model) - 1);
+            cfg_model[sizeof(cfg_model) - 1] = '\0';
+            snprintf(buf, buf_len, "Model changed to: %s", cfg_model);
+        } else {
+            snprintf(buf, buf_len, "Usage: /model [model-name]");
+        }
+        return true;
+    }
     if (strcmp(cmd, "help") == 0) {
         snprintf(buf, buf_len,
             "Commands: /status /clear /heap /debug /devices /rules "
-            "/memory /time /history /reboot /help");
+            "/memory /time /history /model /reboot /help");
         return true;
     }
     if (strcmp(cmd, "reboot") == 0) {
@@ -1408,6 +1420,19 @@ void handleSerialCommand(const char *input) {
         return;
     }
 
+    if (strncmp(input, "/model", 6) == 0) {
+        if (input[6] == '\0') {
+            Serial.printf("Model: %s\n> ", cfg_model);
+        } else if (input[6] == ' ' && input[7] != '\0') {
+            strncpy(cfg_model, input + 7, sizeof(cfg_model) - 1);
+            cfg_model[sizeof(cfg_model) - 1] = '\0';
+            Serial.printf("Model changed to: %s\n> ", cfg_model);
+        } else {
+            Serial.printf("Usage: /model [model-name]\n> ");
+        }
+        return;
+    }
+
     if (strcmp(input, "/setup") == 0) {
         Serial.printf("Starting setup portal...\n");
         runSetupPortal(); /* blocks until config saved + reboot */
@@ -1427,6 +1452,7 @@ void handleSerialCommand(const char *input) {
         Serial.printf("  /time    - Show current time and timezone\n");
         Serial.printf("  /heap    - Show free memory\n");
         Serial.printf("  /debug   - Toggle debug output\n");
+        Serial.printf("  /model   - Show/change LLM model (e.g. /model anthropic/claude-haiku)\n");
         Serial.printf("  /setup   - Start WiFi setup portal (serial only)\n");
         Serial.printf("  /reboot  - Restart ESP32\n");
         Serial.printf("  /help    - This help\n");
