@@ -20,7 +20,7 @@ static Device g_devices[MAX_DEVICES];
  *============================================================================*/
 
 bool deviceIsSensor(DeviceKind kind) {
-    return kind <= DEV_SENSOR_NATS_VALUE;
+    return kind <= DEV_SENSOR_SERIAL_TEXT;
 }
 
 bool deviceIsActuator(DeviceKind kind) {
@@ -38,6 +38,7 @@ const char *deviceKindName(DeviceKind kind) {
         case DEV_SENSOR_CLOCK_MINUTE:  return "clock_minute";
         case DEV_SENSOR_CLOCK_HHMM:   return "clock_hhmm";
         case DEV_SENSOR_NATS_VALUE:    return "nats_value";
+        case DEV_SENSOR_SERIAL_TEXT:   return "serial_text";
         case DEV_ACTUATOR_DIGITAL:     return "digital_out";
         case DEV_ACTUATOR_RELAY:       return "relay";
         case DEV_ACTUATOR_PWM:         return "pwm";
@@ -55,6 +56,7 @@ static DeviceKind kindFromString(const char *s) {
     if (strcmp(s, "clock_minute") == 0)  return DEV_SENSOR_CLOCK_MINUTE;
     if (strcmp(s, "clock_hhmm") == 0)   return DEV_SENSOR_CLOCK_HHMM;
     if (strcmp(s, "nats_value") == 0)    return DEV_SENSOR_NATS_VALUE;
+    if (strcmp(s, "serial_text") == 0)   return DEV_SENSOR_SERIAL_TEXT;
     if (strcmp(s, "digital_out") == 0)   return DEV_ACTUATOR_DIGITAL;
     if (strcmp(s, "relay") == 0)         return DEV_ACTUATOR_RELAY;
     if (strcmp(s, "pwm") == 0)           return DEV_ACTUATOR_PWM;
@@ -83,7 +85,7 @@ Device *deviceFind(const char *name) {
 
 bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
                     const char *unit, bool inverted,
-                    const char *nats_subject) {
+                    const char *nats_subject, uint32_t baud) {
     /* Check for duplicate */
     if (deviceFind(name)) return false;
 
@@ -113,6 +115,12 @@ bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
             g_devices[i].nats_value = 0.0f;
             g_devices[i].nats_msg[0] = '\0';
             g_devices[i].nats_sid = 0;
+            g_devices[i].baud = baud;
+
+            /* Initialize serial_text UART */
+            if (kind == DEV_SENSOR_SERIAL_TEXT) {
+                serialTextInit(baud);
+            }
 
             /* Configure GPIO for actuators */
             if (deviceIsActuator(kind) && pin != PIN_NONE) {
@@ -128,6 +136,9 @@ bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
 bool deviceRemove(const char *name) {
     Device *dev = deviceFind(name);
     if (!dev) return false;
+    if (dev->kind == DEV_SENSOR_SERIAL_TEXT) {
+        serialTextDeinit();
+    }
     dev->used = false;
     dev->name[0] = '\0';
     return true;
@@ -194,6 +205,9 @@ float deviceReadSensor(const Device *dev) {
 
         case DEV_SENSOR_NATS_VALUE:
             return dev->nats_value;
+
+        case DEV_SENSOR_SERIAL_TEXT:
+            return serialTextGetValue();
 
         default:
             return 0.0f;
@@ -387,6 +401,10 @@ void devicesSave() {
             w += snprintf(buf + w, sizeof(buf) - w,
                 ",\"ns\":\"%s\"", d->nats_subject);
         }
+        if (d->baud > 0) {
+            w += snprintf(buf + w, sizeof(buf) - w,
+                ",\"bd\":%u", (unsigned)d->baud);
+        }
         w += snprintf(buf + w, sizeof(buf) - w, "}");
 
         if (w >= (int)sizeof(buf) - 1) break;
@@ -447,10 +465,11 @@ static void devicesLoad() {
 
         char nats_subj[32] = "";
         devJsonGetString(objBuf, "ns", nats_subj, sizeof(nats_subj));
+        uint32_t baud = (uint32_t)devJsonGetInt(objBuf, "bd", 0);
 
         DeviceKind kind = kindFromString(kind_str);
         deviceRegister(name, kind, (uint8_t)pin, unit, inverted,
-                       nats_subj[0] ? nats_subj : nullptr);
+                       nats_subj[0] ? nats_subj : nullptr, baud);
         count++;
 
         p = obj_end + 1;
@@ -458,6 +477,106 @@ static void devicesLoad() {
 
     Serial.printf("Devices: loaded %d from /devices.json\n", count);
 }
+
+/*============================================================================
+ * Serial Text UART (one device max, UART1 on fixed pins)
+ *============================================================================*/
+
+static HardwareSerial SerialText(1);
+static bool  g_serial_text_active = false;
+static float g_serial_text_value  = 0.0f;
+static char  g_serial_text_msg[64];
+static char  g_serial_text_buf[128];
+static int   g_serial_text_pos = 0;
+
+void serialTextInit(uint32_t baud) {
+    if (g_serial_text_active) return;
+    if (baud == 0) baud = 9600;
+    SerialText.begin(baud, SERIAL_8N1, SERIAL_TEXT_RX, SERIAL_TEXT_TX);
+    g_serial_text_active = true;
+    g_serial_text_pos = 0;
+    g_serial_text_msg[0] = '\0';
+    g_serial_text_value = 0.0f;
+    Serial.printf("SerialText: UART1 at %u baud (RX=%d TX=%d)\n",
+                  baud, SERIAL_TEXT_RX, SERIAL_TEXT_TX);
+}
+
+void serialTextDeinit() {
+    if (!g_serial_text_active) return;
+    SerialText.end();
+    g_serial_text_active = false;
+    g_serial_text_pos = 0;
+    g_serial_text_msg[0] = '\0';
+    g_serial_text_value = 0.0f;
+    Serial.println("SerialText: stopped");
+}
+
+void serialTextPoll() {
+    if (!g_serial_text_active) return;
+
+    while (SerialText.available()) {
+        char c = SerialText.read();
+
+        if (c == '\n') {
+            if (g_serial_text_pos == 0) continue;
+            g_serial_text_buf[g_serial_text_pos] = '\0';
+
+            /* Parse value + message using same logic as NATS */
+            parseNatsPayload((const uint8_t *)g_serial_text_buf,
+                             g_serial_text_pos,
+                             &g_serial_text_value,
+                             g_serial_text_msg, sizeof(g_serial_text_msg));
+
+            /* If msg empty, store raw line as msg */
+            if (g_serial_text_msg[0] == '\0') {
+                strncpy(g_serial_text_msg, g_serial_text_buf,
+                        sizeof(g_serial_text_msg) - 1);
+                g_serial_text_msg[sizeof(g_serial_text_msg) - 1] = '\0';
+            }
+
+            if (g_debug) {
+                Serial.printf("[SerialText] '%s' -> val=%.1f msg='%s'\n",
+                              g_serial_text_buf, g_serial_text_value,
+                              g_serial_text_msg);
+            }
+            g_serial_text_pos = 0;
+            continue;
+        }
+
+        if (c == '\r') continue;
+
+        if (g_serial_text_pos < (int)sizeof(g_serial_text_buf) - 1) {
+            g_serial_text_buf[g_serial_text_pos++] = c;
+        }
+    }
+}
+
+bool serialTextSend(const char *text) {
+    if (!g_serial_text_active || !text) return false;
+    SerialText.print(text);
+    /* Append newline if not already present */
+    size_t len = strlen(text);
+    if (len == 0 || text[len - 1] != '\n') {
+        SerialText.print('\n');
+    }
+    return true;
+}
+
+const char *serialTextGetMsg() {
+    return g_serial_text_msg;
+}
+
+float serialTextGetValue() {
+    return g_serial_text_value;
+}
+
+bool serialTextActive() {
+    return g_serial_text_active;
+}
+
+/*============================================================================
+ * Init
+ *============================================================================*/
 
 void devicesInit() {
     memset(g_devices, 0, sizeof(g_devices));

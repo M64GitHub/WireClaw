@@ -58,6 +58,7 @@ const char *actionTypeName(ActionType act) {
         case ACT_NATS_PUBLISH: return "nats_publish";
         case ACT_ACTUATOR:     return "actuator";
         case ACT_TELEGRAM:     return "telegram";
+        case ACT_SERIAL_SEND:  return "serial_send";
         default:               return "?";
     }
 }
@@ -68,6 +69,7 @@ static ActionType actionFromString(const char *s) {
     if (strcmp(s, "nats_publish") == 0) return ACT_NATS_PUBLISH;
     if (strcmp(s, "actuator") == 0)     return ACT_ACTUATOR;
     if (strcmp(s, "telegram") == 0)     return ACT_TELEGRAM;
+    if (strcmp(s, "serial_send") == 0) return ACT_SERIAL_SEND;
     return ACT_GPIO_WRITE;
 }
 
@@ -204,11 +206,17 @@ static void interpolateMessage(const char *tmpl, const Rule *r,
                 if (vlen > 4 && strcmp(varname + vlen - 4, ":msg") == 0) {
                     varname[vlen - 4] = '\0';
                     Device *dev = deviceFind(varname);
-                    if (dev && dev->kind == DEV_SENSOR_NATS_VALUE) {
-                        const char *m = deviceGetNatsMsg(dev);
-                        w += snprintf(out + w, out_len - w, "%s", m);
-                        p = end + 1;
-                        continue;
+                    if (dev) {
+                        const char *m = nullptr;
+                        if (dev->kind == DEV_SENSOR_NATS_VALUE)
+                            m = deviceGetNatsMsg(dev);
+                        else if (dev->kind == DEV_SENSOR_SERIAL_TEXT)
+                            m = serialTextGetMsg();
+                        if (m) {
+                            w += snprintf(out + w, out_len - w, "%s", m);
+                            p = end + 1;
+                            continue;
+                        }
                     }
                 }
 
@@ -303,6 +311,16 @@ static void executeAction(Rule *r, bool is_on) {
                 tgSendMessage(interpolated);
                 r->last_telegram_ms = now;
                 if (g_debug) Serial.printf("[Rule] %s: Telegram: %s\n", r->id, interpolated);
+            }
+            break;
+        }
+        case ACT_SERIAL_SEND: {
+            const char *msg = is_on ? r->on_nats_pay : r->off_nats_pay;
+            if (msg[0]) {
+                static char interpolated[128];
+                interpolateMessage(msg, r, interpolated, sizeof(interpolated));
+                serialTextSend(interpolated);
+                if (g_debug) Serial.printf("[Rule] %s: serial_send: %s\n", r->id, interpolated);
             }
             break;
         }

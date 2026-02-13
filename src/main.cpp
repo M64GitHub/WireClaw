@@ -636,7 +636,11 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
             if (!devs[i].used) continue;
             const Device *d = &devs[i];
             if (w > 0) w += snprintf(buf + w, buf_len - w, "; ");
-            if (d->kind == DEV_SENSOR_NATS_VALUE) {
+            if (d->kind == DEV_SENSOR_SERIAL_TEXT) {
+                float val = deviceReadSensor(d);
+                w += snprintf(buf + w, buf_len - w,
+                    "%s[serial %ubaud]=%.1f%s", d->name, (unsigned)d->baud, val, d->unit);
+            } else if (d->kind == DEV_SENSOR_NATS_VALUE) {
                 float val = deviceReadSensor(d);
                 w += snprintf(buf + w, buf_len - w,
                     "%s[%s]=%.1f%s", d->name, d->nats_subject, val, d->unit);
@@ -1329,7 +1333,12 @@ void handleSerialCommand(const char *input) {
         for (int i = 0; i < MAX_DEVICES; i++) {
             if (!devs[i].used) continue;
             const Device *d = &devs[i];
-            if (d->kind == DEV_SENSOR_NATS_VALUE) {
+            if (d->kind == DEV_SENSOR_SERIAL_TEXT) {
+                float val = deviceReadSensor(d);
+                Serial.printf("  %s [serial_text] %ubaud  = %.1f %s  msg='%s'\n",
+                              d->name, (unsigned)d->baud, val, d->unit,
+                              serialTextGetMsg());
+            } else if (d->kind == DEV_SENSOR_NATS_VALUE) {
                 float val = deviceReadSensor(d);
                 Serial.printf("  %s [nats_value] nats=%s  = %.1f %s\n",
                               d->name, d->nats_subject, val, d->unit);
@@ -1368,7 +1377,8 @@ void handleSerialCommand(const char *input) {
             if (r->on_action == ACT_LED_SET) {
                 int32_t v = r->on_value;
                 Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
-            } else if (r->on_action == ACT_TELEGRAM || r->on_action == ACT_NATS_PUBLISH) {
+            } else if (r->on_action == ACT_TELEGRAM || r->on_action == ACT_NATS_PUBLISH
+                       || r->on_action == ACT_SERIAL_SEND) {
                 Serial.printf(" \"%s\"", r->on_nats_pay);
             } else if (r->on_action == ACT_ACTUATOR) {
                 Serial.printf(" %s", r->on_actuator);
@@ -1381,7 +1391,8 @@ void handleSerialCommand(const char *input) {
                 if (r->off_action == ACT_LED_SET) {
                     int32_t v = r->off_value;
                     Serial.printf("(%d,%d,%d)", (v>>16)&0xFF, (v>>8)&0xFF, v&0xFF);
-                } else if (r->off_action == ACT_TELEGRAM || r->off_action == ACT_NATS_PUBLISH) {
+                } else if (r->off_action == ACT_TELEGRAM || r->off_action == ACT_NATS_PUBLISH
+                           || r->off_action == ACT_SERIAL_SEND) {
                     Serial.printf(" \"%s\"", r->off_nats_pay);
                 } else if (r->off_action == ACT_ACTUATOR) {
                     Serial.printf(" %s", r->off_actuator);
@@ -1569,6 +1580,9 @@ void loop() {
 
     /* Evaluate automation rules */
     rulesEvaluate();
+
+    /* Poll serial_text UART for incoming data */
+    serialTextPoll();
 
     /* Read serial input character by character */
     while (Serial.available()) {

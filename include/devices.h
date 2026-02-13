@@ -27,6 +27,7 @@ enum DeviceKind {
     DEV_SENSOR_CLOCK_MINUTE,    /* getLocalTime() -> 0-59 */
     DEV_SENSOR_CLOCK_HHMM,     /* getLocalTime() -> hour*100+minute (e.g. 1830) */
     DEV_SENSOR_NATS_VALUE,     /* value received from NATS subject */
+    DEV_SENSOR_SERIAL_TEXT,    /* text received from UART serial port */
     /* Actuators */
     DEV_ACTUATOR_DIGITAL,       /* digitalWrite */
     DEV_ACTUATOR_RELAY,         /* digitalWrite (inverted flag) */
@@ -45,6 +46,8 @@ struct Device {
     float       nats_value;
     char        nats_msg[64];
     uint16_t    nats_sid;
+    /* Serial text baud rate (only meaningful for DEV_SENSOR_SERIAL_TEXT) */
+    uint32_t    baud;
 };
 
 /* Initialize device registry - loads from /devices.json, auto-registers chip_temp */
@@ -56,7 +59,8 @@ void devicesSave();
 /* Register a new device. Returns true on success. */
 bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
                     const char *unit, bool inverted,
-                    const char *nats_subject = nullptr);
+                    const char *nats_subject = nullptr,
+                    uint32_t baud = 0);
 
 /* Remove a device by name. Returns true if found and removed. */
 bool deviceRemove(const char *name);
@@ -94,5 +98,30 @@ const char *deviceGetNatsMsg(const Device *dev);
 /* Parse a NATS payload into value + message */
 void parseNatsPayload(const uint8_t *data, size_t len,
                       float *out_value, char *out_msg, size_t msg_len);
+
+/* --- Serial text UART (one device max, fixed pins per chip) --- */
+
+/* Fixed UART1 pins per chip variant */
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+#define SERIAL_TEXT_RX  4
+#define SERIAL_TEXT_TX  5
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+#define SERIAL_TEXT_RX  19
+#define SERIAL_TEXT_TX  20
+#elif defined(CONFIG_IDF_TARGET_ESP32C3)
+#define SERIAL_TEXT_RX  4
+#define SERIAL_TEXT_TX  5
+#else
+#define SERIAL_TEXT_RX  16
+#define SERIAL_TEXT_TX  17
+#endif
+
+void serialTextInit(uint32_t baud);
+void serialTextDeinit();
+void serialTextPoll();
+bool serialTextSend(const char *text);
+const char *serialTextGetMsg();
+float serialTextGetValue();
+bool serialTextActive();
 
 #endif /* DEVICES_H */
