@@ -590,8 +590,133 @@ static void onNatsChat(nats_client_t *client, const nats_msg_t *msg,
     Serial.printf("> ");
 }
 
+/* Shared command response buffer (NATS + Telegram, single-threaded so safe) */
+static char cmdResponseBuf[512];
+
 /**
- * NATS command handler - same commands as serial.
+ * Execute a device command, writing compact result to buf.
+ * cmd is the command name WITHOUT leading "/" (e.g. "status", "clear").
+ * Returns true if the command was recognized and handled.
+ */
+static bool handleCommand(const char *cmd, char *buf, int buf_len) {
+    if (strcmp(cmd, "status") == 0) {
+        snprintf(buf, buf_len,
+            "WiFi: %s (%s), Heap: %u/%u, History: %d, Model: %s, "
+            "Debug: %s, NATS: %s, Uptime: %lus",
+            WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
+            WiFi.localIP().toString().c_str(),
+            ESP.getFreeHeap(), ESP.getHeapSize(),
+            historyCount, cfg_model,
+            g_debug ? "ON" : "OFF",
+            g_nats_enabled
+                ? (g_nats_connected ? "connected" : "disconnected")
+                : "disabled",
+            millis() / 1000);
+        return true;
+    }
+    if (strcmp(cmd, "clear") == 0) {
+        historyCount = 0;
+        LittleFS.remove(HISTORY_FILE);
+        snprintf(buf, buf_len, "History cleared");
+        return true;
+    }
+    if (strcmp(cmd, "heap") == 0) {
+        snprintf(buf, buf_len, "Free heap: %u bytes", ESP.getFreeHeap());
+        return true;
+    }
+    if (strcmp(cmd, "debug") == 0) {
+        g_debug = !g_debug;
+        snprintf(buf, buf_len, "Debug %s", g_debug ? "ON" : "OFF");
+        return true;
+    }
+    if (strcmp(cmd, "devices") == 0) {
+        int w = 0;
+        const Device *devs = deviceGetAll();
+        for (int i = 0; i < MAX_DEVICES && w < buf_len - 80; i++) {
+            if (!devs[i].used) continue;
+            const Device *d = &devs[i];
+            if (w > 0) w += snprintf(buf + w, buf_len - w, "; ");
+            if (d->kind == DEV_SENSOR_NATS_VALUE) {
+                float val = deviceReadSensor(d);
+                w += snprintf(buf + w, buf_len - w,
+                    "%s[%s]=%.1f%s", d->name, d->nats_subject, val, d->unit);
+            } else if (deviceIsSensor(d->kind)) {
+                float val = deviceReadSensor(d);
+                w += snprintf(buf + w, buf_len - w,
+                    "%s=%.1f%s", d->name, val, d->unit);
+            } else {
+                w += snprintf(buf + w, buf_len - w,
+                    "%s(%s)", d->name, deviceKindName(d->kind));
+            }
+        }
+        if (w == 0) snprintf(buf, buf_len, "No devices");
+        return true;
+    }
+    if (strcmp(cmd, "rules") == 0) {
+        int w = 0;
+        const Rule *rules = ruleGetAll();
+        for (int i = 0; i < MAX_RULES && w < buf_len - 60; i++) {
+            if (!rules[i].used) continue;
+            const Rule *r = &rules[i];
+            if (w > 0) w += snprintf(buf + w, buf_len - w, "; ");
+            w += snprintf(buf + w, buf_len - w,
+                "%s '%s' %s val=%d %s",
+                r->id, r->name, r->enabled ? "ON" : "OFF",
+                (int)r->last_reading, r->fired ? "FIRED" : "idle");
+        }
+        if (w == 0) snprintf(buf, buf_len, "No rules");
+        return true;
+    }
+    if (strcmp(cmd, "memory") == 0) {
+        int len = readFile("/memory.txt", buf, buf_len);
+        if (len <= 0) snprintf(buf, buf_len, "(no memory file)");
+        return true;
+    }
+    if (strcmp(cmd, "time") == 0) {
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo, 0)) {
+            snprintf(buf, buf_len,
+                "%04d-%02d-%02d %02d:%02d:%02d (TZ=%s)",
+                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+                cfg_timezone);
+        } else {
+            snprintf(buf, buf_len, "NTP not synced yet");
+        }
+        return true;
+    }
+    if (strcmp(cmd, "history") == 0) {
+        if (historyCount == 0) {
+            snprintf(buf, buf_len, "No conversation history");
+            return true;
+        }
+        int w = snprintf(buf, buf_len, "History: %d turns. ", historyCount);
+        for (int i = 0; i < historyCount && w < buf_len - 60; i++) {
+            w += snprintf(buf + w, buf_len - w, "[%d] %.40s%s ",
+                i + 1, history[i].user,
+                strlen(history[i].user) > 40 ? "..." : "");
+        }
+        return true;
+    }
+    if (strcmp(cmd, "help") == 0) {
+        snprintf(buf, buf_len,
+            "Commands: /status /clear /heap /debug /devices /rules "
+            "/memory /time /history /reboot /help");
+        return true;
+    }
+    if (strcmp(cmd, "reboot") == 0) {
+        if (g_nats_connected) {
+            natsClient.publish(natsSubjectEvents, "Rebooting...");
+        }
+        delay(500);
+        ESP.restart();
+        return true; /* never reached */
+    }
+    return false;
+}
+
+/**
+ * NATS command handler.
  */
 static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
                       void *userdata) {
@@ -606,104 +731,18 @@ static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
 
     Serial.printf("\n[NATS] cmd: %s\n", cmdBuf);
 
-    static char responseBuf[512];
-
-    if (strcmp(cmdBuf, "status") == 0) {
-        snprintf(responseBuf, sizeof(responseBuf),
-            "WiFi: %s (%s), Heap: %u/%u, History: %d, Model: %s, "
-            "Debug: %s, NATS: %s, Uptime: %lus",
-            WiFi.status() == WL_CONNECTED ? "connected" : "disconnected",
-            WiFi.localIP().toString().c_str(),
-            ESP.getFreeHeap(), ESP.getHeapSize(),
-            historyCount, cfg_model,
-            g_debug ? "ON" : "OFF",
-            g_nats_connected ? "connected" : "disconnected",
-            millis() / 1000);
-    } else if (strcmp(cmdBuf, "clear") == 0) {
-        historyCount = 0;
-        LittleFS.remove(HISTORY_FILE);
-        snprintf(responseBuf, sizeof(responseBuf), "History cleared");
-    } else if (strcmp(cmdBuf, "heap") == 0) {
-        snprintf(responseBuf, sizeof(responseBuf), "Free heap: %u bytes",
-                 ESP.getFreeHeap());
-    } else if (strcmp(cmdBuf, "debug") == 0) {
-        g_debug = !g_debug;
-        snprintf(responseBuf, sizeof(responseBuf), "Debug %s",
-                 g_debug ? "ON" : "OFF");
-    } else if (strcmp(cmdBuf, "devices") == 0) {
-        int w = 0;
-        const Device *devs = deviceGetAll();
-        for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(responseBuf) - 80; i++) {
-            if (!devs[i].used) continue;
-            const Device *d = &devs[i];
-            if (w > 0) w += snprintf(responseBuf + w, sizeof(responseBuf) - w, "; ");
-            if (d->kind == DEV_SENSOR_NATS_VALUE) {
-                float val = deviceReadSensor(d);
-                w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
-                             "%s[%s]=%.1f%s", d->name, d->nats_subject, val, d->unit);
-            } else if (deviceIsSensor(d->kind)) {
-                float val = deviceReadSensor(d);
-                w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
-                             "%s=%.1f%s", d->name, val, d->unit);
-            } else {
-                w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
-                             "%s(%s)", d->name, deviceKindName(d->kind));
-            }
-        }
-        if (w == 0) snprintf(responseBuf, sizeof(responseBuf), "No devices");
-    } else if (strcmp(cmdBuf, "rules") == 0) {
-        int w = 0;
-        const Rule *rules = ruleGetAll();
-        for (int i = 0; i < MAX_RULES && w < (int)sizeof(responseBuf) - 60; i++) {
-            if (!rules[i].used) continue;
-            const Rule *r = &rules[i];
-            if (w > 0) w += snprintf(responseBuf + w, sizeof(responseBuf) - w, "; ");
-            w += snprintf(responseBuf + w, sizeof(responseBuf) - w,
-                         "%s '%s' %s val=%d %s",
-                         r->id, r->name, r->enabled ? "ON" : "OFF",
-                         (int)r->last_reading, r->fired ? "FIRED" : "idle");
-        }
-        if (w == 0) snprintf(responseBuf, sizeof(responseBuf), "No rules");
-    } else if (strcmp(cmdBuf, "memory") == 0) {
-        static char memBuf[512];
-        int len = readFile("/memory.txt", memBuf, sizeof(memBuf));
-        if (len > 0) {
-            snprintf(responseBuf, sizeof(responseBuf), "%s", memBuf);
-        } else {
-            snprintf(responseBuf, sizeof(responseBuf), "(no memory file)");
-        }
-    } else if (strcmp(cmdBuf, "time") == 0) {
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo, 0)) {
-            snprintf(responseBuf, sizeof(responseBuf),
-                "%04d-%02d-%02d %02d:%02d:%02d (TZ=%s)",
-                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-                cfg_timezone);
-        } else {
-            snprintf(responseBuf, sizeof(responseBuf), "NTP not synced yet");
-        }
-    } else if (strcmp(cmdBuf, "reboot") == 0) {
-        if (g_nats_connected) {
-            natsClient.publish(natsSubjectEvents, "Rebooting...");
-        }
-        delay(500);
-        ESP.restart();
-        return;
-    } else {
-        snprintf(responseBuf, sizeof(responseBuf),
-                 "Unknown command: %s (try: status, clear, heap, debug, devices, rules, memory, time, reboot)",
-                 cmdBuf);
+    if (!handleCommand(cmdBuf, cmdResponseBuf, sizeof(cmdResponseBuf))) {
+        snprintf(cmdResponseBuf, sizeof(cmdResponseBuf),
+                 "Unknown command: %s (try /help)", cmdBuf);
     }
 
-    Serial.printf("[NATS] -> %s\n> ", responseBuf);
+    Serial.printf("[NATS] -> %s\n> ", cmdResponseBuf);
 
-    /* Reply if request/reply, also publish to events */
     if (msg->reply_len > 0) {
-        nats_msg_respond_str(natsClient.core(), msg, responseBuf);
+        nats_msg_respond_str(natsClient.core(), msg, cmdResponseBuf);
     }
     if (g_nats_connected) {
-        natsClient.publish(natsSubjectEvents, responseBuf);
+        natsClient.publish(natsSubjectEvents, cmdResponseBuf);
     }
 }
 
@@ -1128,6 +1167,28 @@ static void telegramTick() {
 
         Serial.printf("\n[TG] Message from %s: %s\n", incoming_chat_id, msgBuf);
 
+        /* Slash command? Execute locally, no LLM call */
+        if (msgBuf[0] == '/') {
+            const char *cmd = msgBuf + 1;
+            /* Strip @botname suffix (Telegram sends "/status@MyBot" in groups) */
+            static char cmdCopy[64];
+            strncpy(cmdCopy, cmd, sizeof(cmdCopy) - 1);
+            cmdCopy[sizeof(cmdCopy) - 1] = '\0';
+            char *at = strchr(cmdCopy, '@');
+            if (at) *at = '\0';
+
+            if (handleCommand(cmdCopy, cmdResponseBuf, sizeof(cmdResponseBuf))) {
+                Serial.printf("[TG] cmd: /%s -> %s\n", cmdCopy, cmdResponseBuf);
+                tgSendMessage(cmdResponseBuf);
+            } else {
+                snprintf(cmdResponseBuf, sizeof(cmdResponseBuf),
+                         "Unknown command: /%s (try /help)", cmdCopy);
+                tgSendMessage(cmdResponseBuf);
+            }
+            Serial.printf("> ");
+            return;
+        }
+
         /* Run chat */
         const char *response = chatWithLLM(msgBuf);
 
@@ -1345,8 +1406,8 @@ void handleSerialCommand(const char *input) {
     if (strcmp(input, "/help") == 0) {
         Serial.printf("--- esp-claw commands ---\n");
         Serial.printf("  /status  - Show device status\n");
-        Serial.printf("  /config  - Show loaded config\n");
-        Serial.printf("  /prompt  - Show system prompt\n");
+        Serial.printf("  /config  - Show loaded config (serial only)\n");
+        Serial.printf("  /prompt  - Show system prompt (serial only)\n");
         Serial.printf("  /history - Show conversation history (add 'full' for complete text)\n");
         Serial.printf("  /clear   - Clear conversation history\n");
         Serial.printf("  /devices - List registered devices with readings\n");
@@ -1355,10 +1416,11 @@ void handleSerialCommand(const char *input) {
         Serial.printf("  /time    - Show current time and timezone\n");
         Serial.printf("  /heap    - Show free memory\n");
         Serial.printf("  /debug   - Toggle debug output\n");
-        Serial.printf("  /setup   - Start WiFi setup portal\n");
+        Serial.printf("  /setup   - Start WiFi setup portal (serial only)\n");
         Serial.printf("  /reboot  - Restart ESP32\n");
         Serial.printf("  /help    - This help\n");
         Serial.printf("  (anything else) - Chat with AI\n");
+        Serial.printf("  Commands also work via Telegram and NATS.\n");
         Serial.printf("> ");
         return;
     }
