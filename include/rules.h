@@ -19,7 +19,7 @@
 #define RULE_ID_LEN         12
 
 enum ConditionOp { COND_GT, COND_LT, COND_EQ, COND_NEQ, COND_CHANGE, COND_ALWAYS };
-enum ActionType  { ACT_GPIO_WRITE, ACT_LED_SET, ACT_NATS_PUBLISH, ACT_ACTUATOR, ACT_TELEGRAM };
+enum ActionType  { ACT_GPIO_WRITE, ACT_LED_SET, ACT_NATS_PUBLISH, ACT_ACTUATOR, ACT_TELEGRAM, ACT_SERIAL_SEND };
 
 struct Rule {
     char id[RULE_ID_LEN];              /* "rule_01" etc. */

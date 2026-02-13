@@ -97,15 +97,16 @@ static const char *TOOLS_JSON = R"JSON([
 {"type":"function","function":{"name":"file_write","description":"Write file to filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
 {"type":"function","function":{"name":"nats_publish","description":"Publish NATS message","parameters":{"type":"object","properties":{"subject":{"type":"string"},"payload":{"type":"string"}},"required":["subject","payload"]}}},
 {"type":"function","function":{"name":"temperature_read","description":"Read chip temperature (C)","parameters":{"type":"object","properties":{}}}},
-{"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","description":"digital_in|analog_in|ntc_10k|ldr|nats_value|digital_out|relay|pwm"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value type)"}},"required":["name","type"]}}},
+{"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","description":"digital_in|analog_in|ntc_10k|ldr|nats_value|serial_text|digital_out|relay|pwm"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value)"},"baud":{"type":"integer","description":"Baud rate for serial_text (default 9600)"}},"required":["name","type"]}}},
 {"type":"function","function":{"name":"device_list","description":"List registered devices","parameters":{"type":"object","properties":{}}}},
 {"type":"function","function":{"name":"device_remove","description":"Remove device by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"sensor_read","description":"Read named sensor value","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"actuator_set","description":"Set actuator value","parameters":{"type":"object","properties":{"name":{"type":"string"},"value":{"type":"integer"}},"required":["name","value"]}}},
-{"type":"function","function":{"name":"rule_create","description":"Create automation rule: sensor condition triggers action periodically","parameters":{"type":"object","properties":{"rule_name":{"type":"string"},"sensor_name":{"type":"string"},"sensor_pin":{"type":"integer"},"condition":{"type":"string","description":"gt|lt|eq|neq|change|always"},"threshold":{"type":"integer"},"interval_seconds":{"type":"integer"},"actuator_name":{"type":"string"},"on_action":{"type":"string","description":"gpio_write|led_set|nats_publish|actuator|telegram"},"on_pin":{"type":"integer"},"on_value":{"type":"integer"},"on_r":{"type":"integer"},"on_g":{"type":"integer"},"on_b":{"type":"integer"},"on_nats_subject":{"type":"string"},"on_nats_payload":{"type":"string"},"on_telegram_message":{"type":"string","description":"Use {value} or {device_name}"},"off_action":{"type":"string","description":"auto|none|gpio_write|led_set|nats_publish|actuator|telegram"},"off_pin":{"type":"integer"},"off_value":{"type":"integer"},"off_r":{"type":"integer"},"off_g":{"type":"integer"},"off_b":{"type":"integer"},"off_nats_subject":{"type":"string"},"off_nats_payload":{"type":"string"},"off_telegram_message":{"type":"string"}},"required":["rule_name","condition","threshold"]}}},
+{"type":"function","function":{"name":"rule_create","description":"Create automation rule: sensor condition triggers action periodically","parameters":{"type":"object","properties":{"rule_name":{"type":"string"},"sensor_name":{"type":"string"},"sensor_pin":{"type":"integer"},"condition":{"type":"string","description":"gt|lt|eq|neq|change|always"},"threshold":{"type":"integer"},"interval_seconds":{"type":"integer"},"actuator_name":{"type":"string"},"on_action":{"type":"string","description":"gpio_write|led_set|nats_publish|actuator|telegram|serial_send"},"on_pin":{"type":"integer"},"on_value":{"type":"integer"},"on_r":{"type":"integer"},"on_g":{"type":"integer"},"on_b":{"type":"integer"},"on_nats_subject":{"type":"string"},"on_nats_payload":{"type":"string"},"on_telegram_message":{"type":"string","description":"Use {value} or {device_name}"},"on_serial_text":{"type":"string","description":"Text to send via serial_text UART"},"off_action":{"type":"string","description":"auto|none|gpio_write|led_set|nats_publish|actuator|telegram|serial_send"},"off_pin":{"type":"integer"},"off_value":{"type":"integer"},"off_r":{"type":"integer"},"off_g":{"type":"integer"},"off_b":{"type":"integer"},"off_nats_subject":{"type":"string"},"off_nats_payload":{"type":"string"},"off_telegram_message":{"type":"string"},"off_serial_text":{"type":"string","description":"Text for serial off-action"}},"required":["rule_name","condition","threshold"]}}},
 {"type":"function","function":{"name":"rule_list","description":"List all rules","parameters":{"type":"object","properties":{}}}},
 {"type":"function","function":{"name":"rule_delete","description":"Delete a single rule by its ID (e.g. rule_01). Use rule_list first to find the ID.","parameters":{"type":"object","properties":{"rule_id":{"type":"string"}},"required":["rule_id"]}}},
 {"type":"function","function":{"name":"rule_enable","description":"Enable/disable rule","parameters":{"type":"object","properties":{"rule_id":{"type":"string"},"enabled":{"type":"boolean"}},"required":["rule_id","enabled"]}}},
+{"type":"function","function":{"name":"serial_send","description":"Send text over serial_text UART","parameters":{"type":"object","properties":{"text":{"type":"string","description":"Text to send (newline appended)"}},"required":["text"]}}},
 {"type":"function","function":{"name":"remote_chat","description":"Chat with another WireClaw device via NATS","parameters":{"type":"object","properties":{"device":{"type":"string"},"message":{"type":"string"}},"required":["device","message"]}}}
 ])JSON";
 
@@ -293,6 +294,7 @@ static void tool_device_register(const char *args, char *result, int result_len)
     else if (strcmp(type_str, "ntc_10k") == 0)       kind = DEV_SENSOR_NTC_10K;
     else if (strcmp(type_str, "ldr") == 0)            kind = DEV_SENSOR_LDR;
     else if (strcmp(type_str, "nats_value") == 0)     kind = DEV_SENSOR_NATS_VALUE;
+    else if (strcmp(type_str, "serial_text") == 0)   kind = DEV_SENSOR_SERIAL_TEXT;
     else if (strcmp(type_str, "digital_out") == 0)   kind = DEV_ACTUATOR_DIGITAL;
     else if (strcmp(type_str, "relay") == 0)          kind = DEV_ACTUATOR_RELAY;
     else if (strcmp(type_str, "pwm") == 0)            kind = DEV_ACTUATOR_PWM;
@@ -301,7 +303,7 @@ static void tool_device_register(const char *args, char *result, int result_len)
         return;
     }
 
-    /* Validate: nats_value requires subject, others require pin */
+    /* Validate: nats_value requires subject, serial_text enforces one-device limit */
     if (kind == DEV_SENSOR_NATS_VALUE) {
         if (subject[0] == '\0') {
             snprintf(result, result_len, "Error: nats_value requires 'subject'");
@@ -311,13 +313,27 @@ static void tool_device_register(const char *args, char *result, int result_len)
             snprintf(result, result_len, "Warning: NATS not enabled. Registered but won't receive data");
         }
         pin = PIN_NONE;
+    } else if (kind == DEV_SENSOR_SERIAL_TEXT) {
+        /* Only one serial_text device allowed */
+        const Device *devs = deviceGetAll();
+        for (int i = 0; i < MAX_DEVICES; i++) {
+            if (devs[i].used && devs[i].kind == DEV_SENSOR_SERIAL_TEXT) {
+                snprintf(result, result_len, "Error: only one serial_text device allowed (already: '%s')",
+                         devs[i].name);
+                return;
+            }
+        }
+        pin = PIN_NONE;
     } else if (pin == PIN_NONE && deviceIsActuator(kind)) {
         snprintf(result, result_len, "Error: actuator requires 'pin'");
         return;
     }
 
+    int baud_rate = jsonArgInt(args, "baud", 9600);
+
     if (!deviceRegister(name, kind, (uint8_t)pin, unit, inverted,
-                        subject[0] ? subject : nullptr)) {
+                        subject[0] ? subject : nullptr,
+                        kind == DEV_SENSOR_SERIAL_TEXT ? (uint32_t)baud_rate : 0)) {
         snprintf(result, result_len, "Error: register failed (duplicate name or full)");
         return;
     }
@@ -328,6 +344,9 @@ static void tool_device_register(const char *args, char *result, int result_len)
         natsSubscribeDeviceSensors();
         snprintf(result, result_len, "Registered nats_value sensor '%s' on subject '%s'",
                  name, subject);
+    } else if (kind == DEV_SENSOR_SERIAL_TEXT) {
+        snprintf(result, result_len, "Registered serial_text sensor '%s' at %d baud (RX=%d TX=%d)",
+                 name, baud_rate, SERIAL_TEXT_RX, SERIAL_TEXT_TX);
     } else {
         snprintf(result, result_len, "Registered %s '%s' on pin %d",
                  deviceIsSensor(kind) ? "sensor" : "actuator", name, pin);
@@ -346,7 +365,15 @@ static void tool_device_list(const char *args, char *result, int result_len) {
 
         if (count > 0) w += snprintf(result + w, result_len - w, "; ");
 
-        if (d->kind == DEV_SENSOR_NATS_VALUE) {
+        if (d->kind == DEV_SENSOR_SERIAL_TEXT) {
+            float val = deviceReadSensor(d);
+            const char *msg = serialTextGetMsg();
+            w += snprintf(result + w, result_len - w, "%s(serial_text %ubaud)=%.1f%s",
+                         d->name, (unsigned)d->baud, val, d->unit);
+            if (msg[0]) {
+                w += snprintf(result + w, result_len - w, " msg='%.20s'", msg);
+            }
+        } else if (d->kind == DEV_SENSOR_NATS_VALUE) {
             float val = deviceReadSensor(d);
             w += snprintf(result + w, result_len - w, "%s(nats_value %s)=%.1f%s",
                          d->name, d->nats_subject, val, d->unit);
@@ -407,7 +434,15 @@ static void tool_sensor_read(const char *args, char *result, int result_len) {
     }
 
     float val = deviceReadSensor(dev);
-    snprintf(result, result_len, "%s: %.1f %s", name, val, dev->unit);
+    if (dev->kind == DEV_SENSOR_SERIAL_TEXT) {
+        const char *msg = serialTextGetMsg();
+        if (msg[0])
+            snprintf(result, result_len, "%s: %.1f %s (last: '%s')", name, val, dev->unit, msg);
+        else
+            snprintf(result, result_len, "%s: %.1f %s (no data yet)", name, val, dev->unit);
+    } else {
+        snprintf(result, result_len, "%s: %.1f %s", name, val, dev->unit);
+    }
 }
 
 static void tool_actuator_set(const char *args, char *result, int result_len) {
@@ -447,6 +482,7 @@ static ActionType parseActionType(const char *s) {
     if (strcmp(s, "nats_publish") == 0) return ACT_NATS_PUBLISH;
     if (strcmp(s, "actuator") == 0)     return ACT_ACTUATOR;
     if (strcmp(s, "telegram") == 0)     return ACT_TELEGRAM;
+    if (strcmp(s, "serial_send") == 0)  return ACT_SERIAL_SEND;
     return ACT_GPIO_WRITE;
 }
 
@@ -558,6 +594,10 @@ static void tool_rule_create(const char *args, char *result, int result_len) {
         if (on_action == ACT_TELEGRAM) {
             jsonArgString(args, "on_telegram_message", on_nats_pay, sizeof(on_nats_pay));
         }
+        /* For serial_send action, store text in on_nats_pay (reused field) */
+        if (on_action == ACT_SERIAL_SEND) {
+            jsonArgString(args, "on_serial_text", on_nats_pay, sizeof(on_nats_pay));
+        }
 
         /* Pack on_r/on_g/on_b into on_value for led_set */
         if (on_action == ACT_LED_SET && jsonArgExists(args, "on_r")) {
@@ -591,6 +631,9 @@ static void tool_rule_create(const char *args, char *result, int result_len) {
             if (off_action == ACT_TELEGRAM) {
                 jsonArgString(args, "off_telegram_message", off_nats_pay, sizeof(off_nats_pay));
             }
+            if (off_action == ACT_SERIAL_SEND) {
+                jsonArgString(args, "off_serial_text", off_nats_pay, sizeof(off_nats_pay));
+            }
         } else {
             has_off = true;
             off_action = parseActionType(off_act_str);
@@ -608,6 +651,9 @@ static void tool_rule_create(const char *args, char *result, int result_len) {
             /* For telegram action, store message in off_nats_pay */
             if (off_action == ACT_TELEGRAM) {
                 jsonArgString(args, "off_telegram_message", off_nats_pay, sizeof(off_nats_pay));
+            }
+            if (off_action == ACT_SERIAL_SEND) {
+                jsonArgString(args, "off_serial_text", off_nats_pay, sizeof(off_nats_pay));
             }
         }
     }
@@ -713,6 +759,31 @@ static void tool_rule_enable(const char *args, char *result, int result_len) {
 }
 
 /*============================================================================
+ * Serial Text Tool Handler
+ *============================================================================*/
+
+static void tool_serial_send(const char *args, char *result, int result_len) {
+    if (!serialTextActive()) {
+        snprintf(result, result_len,
+            "Error: no serial_text device registered. "
+            "Use device_register with type='serial_text' first.");
+        return;
+    }
+
+    char text[256];
+    if (!jsonArgString(args, "text", text, sizeof(text))) {
+        snprintf(result, result_len, "Error: missing 'text' argument");
+        return;
+    }
+
+    if (serialTextSend(text)) {
+        snprintf(result, result_len, "Sent to serial: %s", text);
+    } else {
+        snprintf(result, result_len, "Error: serial send failed");
+    }
+}
+
+/*============================================================================
  * Multi-Device Tool Handler
  *============================================================================*/
 
@@ -815,6 +886,8 @@ bool toolExecute(const char *name, const char *args_json,
         tool_rule_delete(args_json, result, result_len);
     } else if (strcmp(name, "rule_enable") == 0) {
         tool_rule_enable(args_json, result, result_len);
+    } else if (strcmp(name, "serial_send") == 0) {
+        tool_serial_send(args_json, result, result_len);
     } else if (strcmp(name, "remote_chat") == 0) {
         tool_remote_chat(args_json, result, result_len);
     } else {

@@ -6,7 +6,7 @@ An AI agent that lives on a $5 microcontroller and controls real hardware.
 
 **[Flash it to your ESP32 from the browser](https://wireclaw.io/flash.html)** - no tools to install, configure from your phone. The web flasher auto-detects your chip.
 
-Tell it what you want in plain language - over Telegram, serial, or NATS - and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI. It remembers your preferences across reboots, knows what time it is, and can talk to other WireClaw devices on the network.
+Tell it what you want in plain language - over Telegram, serial, or NATS - and it wires up GPIO pins, reads sensors, switches relays, and sets up automation rules that keep running without the AI. It remembers your preferences across reboots, knows what time it is, can talk to other WireClaw devices on the network, and bridges to any serial device - Arduinos, GPS modules, CO2 sensors, RFID readers - over UART.
 
 ```
 You:  "When the chip temperature goes above 28, set the LED orange.
@@ -159,6 +159,47 @@ Serial:  [Rule] rule_01 'Room Temp Alert' CLEARED (reading=25)
 
 Python scripts, Home Assistant, industrial PLCs, other WireClaws - anything that can publish to NATS can feed data into WireClaw's rule engine. The ESP32 handles the reactions: GPIO, LEDs, relays, Telegram alerts.
 
+It can also talk to other microcontrollers over serial:
+
+```
+You (on Telegram):
+    "Set up a serial connection to an Arduino at 9600 baud, call it arduino"
+
+Serial:  device_register({"name":"arduino","type":"serial_text","baud":9600})
+         SerialText: UART1 at 9600 baud (RX=4 TX=5)
+         -> Registered serial_text sensor 'arduino' at 9600 baud (RX=4 TX=5)
+```
+
+Now WireClaw can send commands and receive data over the UART:
+
+```
+You:  "Ask the Arduino for a temperature reading"
+
+Serial:  serial_send({"text":"GET_TEMP"})
+         -> Sent to serial: GET_TEMP
+
+         [SerialText] '23.5' -> val=23.5 msg='23.5'
+
+         sensor_read({"name":"arduino"})
+         -> arduino: 23.5  (last: '23.5')
+
+WireClaw: "The Arduino reports a temperature of 23.5°C."
+```
+
+And rules work on serial data just like any other sensor:
+
+```
+You:  "Alert me on Telegram when the Arduino reading goes above 30."
+
+Serial:  rule_create(sensor_name="arduino", condition="gt", threshold=30,
+                     on_action="telegram",
+                     on_telegram_message="Arduino temp: {value}°C - {arduino:msg}")
+
+         -> Rule created: rule_01 'arduino alert' - arduino > 30 (every 5s)
+```
+
+GPS modules, CO2 sensors, RFID readers, custom Arduinos - anything with a serial port becomes a sensor that feeds into WireClaw's rule engine. The AI sets it up; the rules run without it.
+
 ## How It Works
 
 WireClaw runs two loops on the ESP32:
@@ -175,11 +216,12 @@ Time is synced via NTP on boot. Persistent memory is loaded into every conversat
 
 1. **`rulesEvaluate()`** - every iteration, no network
    - For each enabled rule: read sensor -> check condition -> fire action
-   - Actions: GPIO write, LED set, NATS publish, Telegram alert
+   - Actions: GPIO write, LED set, NATS publish, Telegram alert, serial send
+   - **`serialTextPoll()`** - reads incoming UART bytes, stores last complete line
 2. **AI chat** - triggered by incoming messages
    - Input: Telegram poll / Serial / NATS
    - -> `chatWithLLM()` -> LLM API -> tool calls
-   - Tools: `rule_create`, `led_set`, `gpio_write`, `sensor_read`, `remote_chat`, ...
+   - Tools: `rule_create`, `led_set`, `gpio_write`, `sensor_read`, `serial_send`, `remote_chat`, ...
 
 The rule loop and the AI loop share the same `loop()` function but serve different purposes. The rule engine evaluates every cycle regardless of whether anyone is chatting. Multiple rules monitoring the same sensor see the exact same reading per cycle (cached internally), so they always trigger and clear together.
 
@@ -402,7 +444,8 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 - **Persistent Memory** - AI remembers user preferences, device nicknames, and observations across reboots
 - **Telegram Alerts** - rules send push notifications with live sensor values via `{device_name}` interpolation, no LLM in the loop
 - **Device Registry** - named sensors and actuators instead of raw pin numbers, persisted to flash
-- **AI Agent** - agentic loop with 18 tools, up to 5 iterations per message
+- **Serial Bridge** - connect any serial device (Arduino, GPS, CO2 sensor) via UART1; read data as a sensor, send commands via `serial_send`, use in rules with `{name:msg}` interpolation
+- **AI Agent** - agentic loop with 19 tools, up to 5 iterations per message
 - **Local LLM** - use a local server (Ollama, llama.cpp) over HTTP instead of cloud API
 - **Multi-Device Mesh** - devices talk to each other over NATS via `remote_chat`
 - **Telegram Bot** - chat with your ESP32 from your phone
@@ -550,6 +593,7 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 | `clock_minute` | Sensor | Current minute 0-59 via NTP (no pin, virtual) |
 | `clock_hhmm` | Sensor | Time as hour\*100+minute, e.g. 1830 = 18:30 (no pin, virtual) |
 | `nats_value` | Sensor | Value received from a NATS subject (no pin, virtual) |
+| `serial_text` | Sensor | Text lines from UART1 serial port (no pin, virtual, one max) |
 | `digital_out` | Actuator | `digitalWrite()` - HIGH or LOW |
 | `relay` | Actuator | `digitalWrite()` with optional inverted logic |
 | `pwm` | Actuator | `analogWrite()` - 0-255 |
@@ -593,6 +637,7 @@ Each rule has an **on action** (fires when condition becomes true) and an option
 | `gpio_write` | `on_pin`, `on_value` (0 or 1) | Write a raw GPIO pin HIGH/LOW. |
 | `nats_publish` | `on_nats_subject`, `on_nats_payload` | Publish a message to a NATS subject. Supports `{value}` and `{device_name}` interpolation. |
 | `telegram` | `on_telegram_message` | Send a Telegram message. Supports `{value}` and `{device_name}` interpolation. Subject to `telegram_cooldown` (default 60s per rule). |
+| `serial_send` | `on_serial_text` | Send text over serial_text UART. Supports `{value}` and `{device_name}` interpolation. |
 
 ### Examples
 
@@ -633,6 +678,14 @@ You just describe what you want in natural language. The AI picks the right para
 "Turn on the garage light when motion is detected over NATS."
 -> sensor_name=motion (nats_value), condition=eq, threshold=1
   actuator_name=light (auto on/off)
+
+"Every 30 seconds, ask the Arduino for a reading."
+-> sensor_name=chip_temp (any sensor), condition=always, interval_seconds=30
+  on_action=serial_send, on_serial_text="READ"
+
+"Alert me on Telegram when the Arduino reports above 50."
+-> sensor_name=arduino (serial_text), condition=gt, threshold=50
+  on_action=telegram, on_telegram_message="Arduino: {value} - {arduino:msg}"
 ```
 
 ### Behavior
@@ -642,7 +695,7 @@ You just describe what you want in natural language. The AI picks the right para
 - **Auto-off** - when using `actuator_name` or `off_action`, the reverse action runs when the condition clears
 - **Interval** - configurable per rule (default 5 seconds)
 - **Telegram cooldown** - per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
-- **Message interpolation** - `{value}` in telegram/NATS messages is replaced with the triggering sensor's reading; `{device_name}` (e.g. `{chip_temp}`) reads any named sensor live at fire time; `{name:msg}` inserts the message string from a NATS virtual sensor's last JSON payload
+- **Message interpolation** - `{value}` in telegram/NATS/serial messages is replaced with the triggering sensor's reading; `{device_name}` (e.g. `{chip_temp}`) reads any named sensor live at fire time; `{name:msg}` inserts the message string from a NATS virtual sensor or serial_text device
 - **Sensor caching** - all rules monitoring the same sensor see the same value per evaluation cycle
 - **NATS events** - every rule trigger publishes to `{device_name}.events`
 - **Persistence** - rules survive reboots (`/rules.json`)
@@ -683,7 +736,7 @@ Works with [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggergan
 
 ## LLM Tools
 
-18 tools available to the AI:
+19 tools available to the AI:
 
 | Tool | Description |
 |------|-------------|
@@ -708,6 +761,7 @@ Works with [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggergan
 | `file_read` | Read a file from LittleFS |
 | `file_write` | Write a file to LittleFS |
 | `nats_publish` | Publish to a NATS subject |
+| `serial_send` | Send text over serial_text UART |
 | `remote_chat` | Send a message to another WireClaw device via NATS |
 
 ## Serial Commands
@@ -851,6 +905,132 @@ Unsubscribes from the NATS subject and removes the device. Rules referencing it 
 - Up to 16 devices total (shared with physical sensors/actuators and built-in virtual sensors)
 - NATS subject max length: 31 characters, message field max length: 63 characters
 - 14 NATS subscription slots available (16 max minus 2 for chat + cmd)
+
+### Serial Text UART
+
+Any serial device can become a sensor in WireClaw's device registry. Register it with a baud rate, and the ESP32 reads newline-delimited text from UART1 on fixed pins. The last received line is stored as both a numeric value (for rule conditions) and a text string (for message interpolation). You can also send text out via the `serial_send` tool or rule action.
+
+Only one serial_text device is allowed (one spare UART). UART0 is reserved for USB serial debug.
+
+#### Pin Assignments
+
+| Chip | UART1 RX | UART1 TX |
+|------|----------|----------|
+| ESP32-C6 | GPIO 4 | GPIO 5 |
+| ESP32-S3 | GPIO 19 | GPIO 20 |
+| ESP32-C3 | GPIO 4 | GPIO 5 |
+
+Pins are fixed per chip - no configuration needed. Connect your serial device's TX to the RX pin and vice versa. Don't forget a common ground.
+
+#### Registration
+
+```
+device_register(name="arduino", type="serial_text", baud=9600)
+```
+
+Supported baud rates: 9600, 19200, 38400, 57600, 115200 (or any standard rate). Default: 9600.
+
+#### Receiving Data
+
+The ESP32 reads bytes non-blocking in the main loop and accumulates them until a newline (`\n`). The last complete line is stored and parsed:
+
+| Received line | Stored value | Stored message |
+|---|---|---|
+| `42.5` | 42.5 | `42.5` |
+| `{"value":42.5,"message":"Hot"}` | 42.5 | Hot |
+| `on` / `true` / `1` | 1.0 | `on` / `true` / `1` |
+| `Hello world` | 0.0 | `Hello world` |
+
+Same parsing as NATS virtual sensors. Pure text lines that aren't numbers or JSON are stored as the message with value 0.0.
+
+#### Sending Data
+
+Via LLM tool:
+```
+serial_send(text="GET_TEMP")
+```
+
+Sends `GET_TEMP\n` over the UART. A newline is appended automatically if not present.
+
+Via rule action:
+```
+rule_create(rule_name="poll_sensor", sensor_name="chip_temp",
+            condition="always", threshold=0, interval_seconds=30,
+            on_action="serial_send", on_serial_text="READ")
+```
+
+Sends `READ\n` every 30 seconds. Supports `{value}` and `{device_name}` interpolation in the text.
+
+#### Example: Arduino Bridge
+
+Wire an Arduino's TX to the ESP32's UART1 RX pin, share ground:
+
+```
+You:  "Connect an Arduino on serial at 9600 baud"
+
+AI:   device_register(name="arduino", type="serial_text", baud=9600)
+      -> Registered serial_text sensor 'arduino' at 9600 baud (RX=4 TX=5)
+
+You:  "Every 30 seconds, send READ to the Arduino.
+       Alert me on Telegram when it reports above 50."
+
+AI:   rule_create(rule_name="poll", sensor_name="chip_temp",
+                  condition="always", interval_seconds=30,
+                  on_action="serial_send", on_serial_text="READ")
+      -> Rule created: rule_01 'poll'
+
+      rule_create(rule_name="alert", sensor_name="arduino",
+                  condition="gt", threshold=50,
+                  on_action="telegram",
+                  on_telegram_message="Arduino: {arduino:msg}")
+      -> Rule created: rule_02 'alert'
+```
+
+The first rule sends `READ\n` to the Arduino every 30 seconds. The Arduino replies with a number (e.g. `51.3\n`). The second rule fires when that value exceeds 50 and sends the text to Telegram.
+
+#### Example: CO2 Sensor
+
+Many serial CO2 sensors (MH-Z19, SenseAir S8) respond to simple commands:
+
+```
+You:  "Set up the CO2 sensor on serial at 9600 baud, call it co2.
+       Send me a Telegram when CO2 goes above 1000 ppm."
+
+AI:   device_register(name="co2", type="serial_text", baud=9600)
+      rule_create(sensor_name="co2", condition="gt", threshold=1000,
+                  on_action="telegram",
+                  on_telegram_message="CO2 is {value} ppm - ventilate!")
+```
+
+#### Reading
+
+Via LLM tool:
+```
+sensor_read(name="arduino")  ->  arduino: 23.5  (last: '23.5')
+```
+
+Via serial:
+```
+/devices
+  arduino [serial_text] 9600baud  = 23.5   msg='23.5'
+```
+
+#### Limits
+
+- One serial_text device at a time (one UART available)
+- Maximum line length: 127 characters (longer lines are truncated)
+- Text mode only (newline-delimited), no binary
+- Last value resets to 0 on boot until a new line is received
+- Persisted to `/devices.json`, UART re-initialized automatically after reboot
+- `{name:msg}` interpolation works in telegram, nats_publish, and serial_send rule actions
+
+#### Removal
+
+```
+device_remove(name="arduino")
+```
+
+Stops the UART and removes the device. Rules referencing it stop evaluating.
 
 ### Multi-Device Communication
 

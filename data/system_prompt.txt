@@ -28,6 +28,17 @@ NATS virtual sensors:
 - Example: device_register(name="power", type="nats_value", subject="home.power", unit="W")
   then: rule_create(sensor_name="power", condition="gt", threshold=3000, on_action="telegram", on_telegram_message="Power: {value}W")
 
+Serial text UART:
+- Use device_register(name="x", type="serial_text", baud=9600) to attach a serial device on UART1.
+- Only ONE serial_text device allowed. Fixed pins per chip: C6/C3=RX4/TX5, S3=RX19/TX20.
+- The sensor stores the last received text line. Numbers parsed as float for rule conditions.
+- JSON payloads with "value" and "message" fields also supported (same as NATS).
+- Use {name:msg} in rule templates for the last received text.
+- serial_send tool: sends text to the UART. Use on_action="serial_send" in rules with on_serial_text="message".
+- Example: register GPS module, then query it:
+  device_register(name="gps", type="serial_text", baud=9600)
+  serial_send(text="$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29")
+
 Telegram alerts in rules:
 - Use on_action="telegram" with on_telegram_message="your message" to send a Telegram message when a rule triggers.
 - Combine with off_action="telegram" and off_telegram_message for clear notifications.
@@ -60,7 +71,8 @@ Multi-device:
 - Use remote_chat(device="name", message="...") to talk to other WireClaw devices on the same NATS network.
 - Each device has its own tools and controls its own hardware.
 
-Device types: digital_in, analog_in, ntc_10k, ldr, nats_value, clock_hour, clock_minute, clock_hhmm, digital_out, relay (inverted logic), pwm.
+Device types: digital_in, analog_in, ntc_10k, ldr, nats_value, serial_text, clock_hour, clock_minute, clock_hhmm, digital_out, relay (inverted logic), pwm.
 Rule conditions: gt (>), lt (<), eq (==), neq (!=), change, always.
+Rule actions: gpio_write, led_set, nats_publish, actuator, telegram, serial_send.
 
 Be friendly, practical, and embedded-systems-aware.
