@@ -338,6 +338,13 @@ static void publishRuleEvent(const Rule *r, bool is_on) {
     natsClient.publish(natsSubjectEvents, eventBuf);
 }
 
+/* Simple djb2 hash for text-aware COND_CHANGE */
+static uint32_t msgHash(const char *s) {
+    uint32_t h = 5381;
+    while (*s) h = h * 33 + (uint8_t)*s++;
+    return h;
+}
+
 /*============================================================================
  * Evaluation
  *============================================================================*/
@@ -398,6 +405,21 @@ void rulesEvaluate() {
         int32_t prev_reading = r->last_reading;
         r->last_reading = (int32_t)reading;
 
+        /* For text-bearing sensors, compute message hash for COND_CHANGE */
+        uint32_t cur_msg_hash = 0;
+        if (r->sensor_name[0] && r->condition == COND_CHANGE) {
+            Device *sdev = deviceFind(r->sensor_name);
+            if (sdev) {
+                const char *msg = nullptr;
+                if (sdev->kind == DEV_SENSOR_NATS_VALUE)
+                    msg = deviceGetNatsMsg(sdev);
+                else if (sdev->kind == DEV_SENSOR_SERIAL_TEXT)
+                    msg = serialTextGetMsg();
+                if (msg && msg[0])
+                    cur_msg_hash = msgHash(msg);
+            }
+        }
+
         /* Evaluate condition */
         bool condition_met = false;
         switch (r->condition) {
@@ -405,7 +427,13 @@ void rulesEvaluate() {
             case COND_LT:     condition_met = (reading < (float)r->threshold); break;
             case COND_EQ:     condition_met = ((int32_t)reading == r->threshold); break;
             case COND_NEQ:    condition_met = ((int32_t)reading != r->threshold); break;
-            case COND_CHANGE: condition_met = ((int32_t)reading != prev_reading); break;
+            case COND_CHANGE: {
+                bool val_changed = ((int32_t)reading != prev_reading);
+                bool msg_changed = (cur_msg_hash != 0 && cur_msg_hash != r->last_msg_hash);
+                condition_met = val_changed || msg_changed;
+                r->last_msg_hash = cur_msg_hash;
+                break;
+            }
             case COND_ALWAYS: condition_met = true; break;
         }
 

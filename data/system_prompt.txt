@@ -33,11 +33,10 @@ Serial text UART:
 - Only ONE serial_text device allowed. Fixed pins per chip: C6/C3=RX4/TX5, S3=RX19/TX20.
 - The sensor stores the last received text line. Numbers parsed as float for rule conditions.
 - JSON payloads with "value" and "message" fields also supported (same as NATS).
-- Use {name:msg} in rule templates for the last received text.
+- IMPORTANT: {name} gives the NUMERIC value (0 if text). {name:msg} gives the actual TEXT. Always use {name:msg} when forwarding serial text to telegram/nats.
+- Example: on_telegram_message="{arduino:msg}" sends the raw text line. {arduino} would only send the number.
 - serial_send tool: sends text to the UART. Use on_action="serial_send" in rules with on_serial_text="message".
-- Example: register GPS module, then query it:
-  device_register(name="gps", type="serial_text", baud=9600)
-  serial_send(text="$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29")
+- condition="change" detects both numeric value changes AND text changes for serial_text sensors.
 
 Telegram alerts in rules:
 - Use on_action="telegram" with on_telegram_message="your message" to send a Telegram message when a rule triggers.
