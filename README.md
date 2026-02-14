@@ -546,7 +546,7 @@ Edit `data/config.json`:
   "wifi_ssid": "YourNetwork",
   "wifi_pass": "YourPassword",
   "api_key": "sk-or-v1-your-openrouter-api-key",
-  "model": "openai/gpt-4o-mini",
+  "model": "google/gemini-2.5-flash",
   "device_name": "wireclaw-01",
   "api_base_url": "",
   "nats_host": "",
@@ -568,12 +568,20 @@ For a local LLM: set `api_base_url` to your server's OpenAI-compatible endpoint,
 
 Models tested with tool calling and chain reasoning:
 
-| Model | Chain Reasoning | Notes |
-|-------|----------------|-------|
-| Claude Sonnet 4.5 | Excellent | Clean, minimal tool calls. Recommended. |
-| Aurora Alpha | Excellent | Fastest response (~4s). Clean style. |
-| GPT-5 Mini | Excellent | Works well, verbose parameters (all defaults sent). |
-| GPT-4o Mini | Basic | Fine for simple chains and testing. |
+| Model | Response | Chain Reasoning | Notes |
+|-------|----------|----------------|-------|
+| Gemini 2.5 Flash | ~4s | Excellent | Numbered list, plain text. |
+| GPT-OSS-120B | ~8s | Excellent | Conversational numbered steps. |
+| Claude Sonnet 4.5 | ~10s | Excellent | Detailed markdown with bold labels. |
+| GPT-5 Mini | ~16s | Excellent | One-line summary. Verbose tool calls (sends all defaults). |
+| DeepSeek V3.2 | ~44s | Excellent | Thinking model. Correct but very slow. |
+| Aurora Alpha | ~4s | Basic | Fast but inconsistent delay reasoning across runs. |
+| GPT-4o Mini | | Basic | May misinterpret delays in chain steps. |
+| Claude 3 Haiku | ~7s | Basic | May misinterpret delays in chain steps. |
+| DeepSeek V3 | ~14s | Basic | May misinterpret delays in chain steps. |
+| Gemini 2.5 Flash Lite | ~4s | Basic | May misinterpret delays in chain steps. |
+| Qwen 3 Coder | ~6s | Basic | May misinterpret delays in chain steps. |
+| Qwen 2.5 7B | ~10s | Fail | Missing steps, wrong delays, bad template syntax. |
 
 See [docs/RULE-CHAINING.md](docs/RULE-CHAINING.md#appendix-a-model-comparison) for detailed output from each model.
 

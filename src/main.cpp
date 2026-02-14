@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief esp-claw - ESP32 AI Agent
+ * @brief WireClaw - ESP32 AI Agent
  *
  * A reimplementation of PicoClaw's core agent loop for ESP32.
  * Phase 5: Polish - history persistence, LED heartbeat, watchdog.
@@ -21,6 +21,7 @@
 #include "devices.h"
 #include "rules.h"
 #include "setup_portal.h"
+#include "version.h"
 #include <nats_atoms.h>
 
 /*============================================================================
@@ -51,8 +52,8 @@ static void configDefaults() {
     cfg_wifi_ssid[0] = '\0';
     cfg_wifi_pass[0] = '\0';
     cfg_api_key[0] = '\0';
-    strncpy(cfg_model, "openai/gpt-4o-mini", sizeof(cfg_model));
-    strncpy(cfg_device_name, "esp-claw", sizeof(cfg_device_name));
+    strncpy(cfg_model, "google/gemini-2.5-flash", sizeof(cfg_model));
+    strncpy(cfg_device_name, "wireclaw", sizeof(cfg_device_name));
     cfg_api_base_url[0] = '\0';
     cfg_nats_host[0] = '\0';
     cfg_nats_port = 4222;
@@ -60,7 +61,7 @@ static void configDefaults() {
     cfg_telegram_chat_id[0] = '\0';
     strncpy(cfg_timezone, "UTC0", sizeof(cfg_timezone));
     strncpy(cfg_system_prompt,
-        "You are esp-claw, a helpful AI assistant running on an ESP32 microcontroller. "
+        "You are WireClaw, a helpful AI assistant running on an ESP32 microcontroller. "
         "Be concise. Keep responses under 200 words unless asked for detail.",
         sizeof(cfg_system_prompt));
 }
@@ -949,6 +950,7 @@ static bool connectNats() {
 static WiFiClientSecure tgClient;
 bool g_telegram_enabled = false;
 static int  tgLastUpdateId = 0;
+static bool tgNeedFlush = true;   /* skip pending msgs on first poll */
 static unsigned long tgLastPoll = 0;
 
 /* Long-poll state machine */
@@ -1104,11 +1106,18 @@ static void telegramTick() {
             return;
         }
 
-        /* Build getUpdates request with long-poll timeout */
+        /* Build getUpdates request */
         static char body[128];
-        int body_len = snprintf(body, sizeof(body),
-            "{\"offset\":%d,\"limit\":1,\"timeout\":%d}",
-            tgLastUpdateId + 1, TG_LONG_POLL_S);
+        int body_len;
+        if (tgNeedFlush) {
+            /* First poll after boot: skip all pending messages */
+            body_len = snprintf(body, sizeof(body),
+                "{\"offset\":-1,\"limit\":1,\"timeout\":0}");
+        } else {
+            body_len = snprintf(body, sizeof(body),
+                "{\"offset\":%d,\"limit\":1,\"timeout\":%d}",
+                tgLastUpdateId + 1, TG_LONG_POLL_S);
+        }
 
         static char httpReq[512];
         int hdr_len = snprintf(httpReq, sizeof(httpReq),
@@ -1205,6 +1214,12 @@ static void telegramTick() {
         if (g_debug) Serial.printf("[TG] update_id=%d (last=%d)\n", update_id, tgLastUpdateId);
         if (update_id <= tgLastUpdateId) return;
         tgLastUpdateId = update_id;
+
+        if (tgNeedFlush) {
+            tgNeedFlush = false;
+            Serial.printf("[TG] Flushed pending messages (last_id=%d)\n", update_id);
+            return;
+        }
 
         /* Extract chat_id from message.chat.id */
         const char *chat_id_str = strstr(resp, "\"chat\"");
@@ -1363,7 +1378,7 @@ void setup() {
 
     Serial.printf("\n\n");
     Serial.printf("========================================\n");
-    Serial.printf("  esp-claw - ESP32 AI Agent v0.7.0\n");
+    Serial.printf("  WireClaw v%s\n", WIRECLAW_VERSION);
     Serial.printf("========================================\n\n");
 
     /* Load config from LittleFS */
@@ -1429,6 +1444,9 @@ void setup() {
         tgClient.setTimeout(30); /* seconds - matches LLM client pattern */
         tgLastPoll = millis();   /* delay first poll by one interval */
         Serial.printf("Telegram: enabled (chat_id %s)\n", cfg_telegram_chat_id);
+        char startMsg[64];
+        snprintf(startMsg, sizeof(startMsg), "WireClaw v%s started", WIRECLAW_VERSION);
+        tgSendMessage(startMsg);
     } else {
         Serial.printf("Telegram: disabled (no telegram_token/telegram_chat_id in config)\n");
     }

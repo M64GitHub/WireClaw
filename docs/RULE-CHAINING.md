@@ -207,7 +207,7 @@ Rules with no chain have empty `"ci"` / `"coi"` strings and 0 delays.
 
 ## Appendix A: Model Comparison
 
-Same prompt tested with three models. All produce a working 4-step chain, but with different tool call styles and response times.
+Same prompt tested with five models. All produce a working 4-step chain, but with different tool call styles and response times.
 
 ### Claude Sonnet 4.5
 
@@ -223,57 +223,37 @@ Sonnet sends only the required parameters — clean and minimal (~400 bytes of a
 --- Thinking... ---
 [Agent] 1 tool call(s) in iteration 1:
   -> chain_create({"sensor_name": "test", "condition": "gt", "threshold": 100,
-       "step1_action": "telegram", "step1_message": "Test sensor exceeded 100: {value}",
+       "step1_action": "telegram", "step1_message": "Test sensor exceeded 100! Value: {value}",
        "step2_action": "telegram", "step2_delay": 5, "step2_message": "hello test",
        "step3_action": "led_set", "step3_delay": 0, "step3_r": 0, "step3_g": 255, "step3_b": 0,
        "step4_action": "led_set", "step4_delay": 10, "step4_r": 0, "step4_g": 0, "step4_b": 0})
-     = Chain created: rule_08 test>100 -> telegram -> 5s -> telegram -> LED(0,255,0) -> 10s -> LED(0,0,0)
+     = Chain created: rule_04 test>100 -> telegram -> 5s -> telegram -> LED(0,255,0) -> 10s -> LED(0,0,0)
 
-Perfect! I've created the automation chain (rule_08). Here's what will happen when
-the test sensor exceeds 100:
+Perfect! I've created a 4-step automation chain:
 
-1. Immediately: Send you a Telegram message about the sensor value
-2. After 5 seconds: Send "hello test" via Telegram
-3. Immediately after: Set the LED to green
-4. After 10 more seconds: Turn the LED off
+1. **When test sensor > 100**: Send you a Telegram alert with the value
+2. **After 5 seconds**: Send "hello test" message
+3. **Immediately after**: Set LED to green
+4. **After 10 more seconds**: Turn LED off
 
-The chain is now active and monitoring your test sensor.
---- (10844ms, 9768+506 tokens) ---
-```
-
-**Runtime:**
-
-```
-[Rule] rule_08 'test step1' TRIGGERED (reading=1000, threshold=100)
-
---- 5 seconds later ---
-
-[Rule] rule_07 'test step2' CHAIN-TRIGGERED
-[Rule] rule_06 'test step3' CHAIN-TRIGGERED
-
---- 10 seconds later ---
-
-[Rule] rule_05 'test step4' CHAIN-TRIGGERED
-
---- sensor drops below threshold ---
-
-[Rule] rule_08 'test step1' CLEARED (reading=10)
+The chain is now active and waiting for the test sensor to exceed 100!
+--- (9809ms, 9782+498 tokens) ---
 ```
 
 **`/rules` output:**
 
 ```
-rule_05 'test step4' [ON]  chained 0 val=0 idle
+rule_01 'test step4' [ON]  chained 0 val=0 idle
   on: led_set(0,0,0)
-rule_06 'test step3' [ON]  chained 0 val=0 idle
+rule_02 'test step3' [ON]  chained 0 val=0 idle
   on: led_set(0,255,0)
-  chain: ->rule_05 (10s)
-rule_07 'test step2' [ON]  chained 0 val=0 idle
+  chain: ->rule_01 (10s)
+rule_03 'test step2' [ON]  chained 0 val=0 idle
   on: telegram "hello test"
-  chain: ->rule_06 (0s)
-rule_08 'test step1' [ON] test gt 100 val=10 idle
-  on: telegram "Test sensor exceeded 100: {value}"
-  chain: ->rule_07 (5s)
+  chain: ->rule_02 (0s)
+rule_04 'test step1' [ON] test gt 100 val=0 idle
+  on: telegram "Test sensor exceeded 100! Value: {value}"
+  chain: ->rule_03 (5s)
 ```
 
 ---
@@ -322,6 +302,101 @@ rule_03 'test step2' [ON]  chained 0 val=0 idle
   chain: ->rule_02 (0s)
 rule_04 'test step1' [ON] test gt 100 val=0 idle
   on: telegram "Test sensor: {value}"
+  chain: ->rule_03 (5s)
+```
+
+---
+
+### GPT-OSS-120B
+
+Clean parameter style like Sonnet and Aurora, completes in ~8 seconds (~400 bytes of arguments).
+
+**Serial output:**
+
+```
+[TG] Message from user: please send me a telegram message when the test sensor > 100,
+  then wait 5s, then send me another message "hello test", then set the led to green,
+  and after another 10s set the led off
+
+--- Thinking... ---
+[Agent] 1 tool call(s) in iteration 1:
+  -> chain_create({"condition": "gt", "sensor_name": "test", "threshold": 100,
+       "step1_action": "telegram", "step1_message": "Test sensor value: {value}",
+       "step2_action": "telegram", "step2_message": "hello test", "step2_delay": 5,
+       "step3_action": "led_set", "step3_r": 0, "step3_g": 255, "step3_b": 0, "step3_delay": 0,
+       "step4_action": "led_set", "step4_r": 0, "step4_g": 0, "step4_b": 0, "step4_delay": 10})
+     = Chain created: rule_04 test>100 -> telegram -> 5s -> telegram -> LED(0,255,0) -> 10s -> LED(0,0,0)
+
+The automation chain is set:
+
+1. When **test** > 100, you'll get a Telegram with the sensor value.
+2. After 5 seconds, another Telegram saying "hello test".
+3. The onboard LED turns **green**.
+4. After another 10 seconds, the LED turns **off**.
+--- (8378ms, 5199+531 tokens) ---
+```
+
+**`/rules` output:**
+
+```
+rule_01 'test step4' [ON]  chained 0 val=0 idle
+  on: led_set(0,0,0)
+rule_02 'test step3' [ON]  chained 0 val=0 idle
+  on: led_set(0,255,0)
+  chain: ->rule_01 (10s)
+rule_03 'test step2' [ON]  chained 0 val=0 idle
+  on: telegram "hello test"
+  chain: ->rule_02 (0s)
+rule_04 'test step1' [ON] test gt 100 val=0 idle
+  on: telegram "Test sensor value: {value}"
+  chain: ->rule_03 (5s)
+```
+
+---
+
+### Gemini 2.5 Flash
+
+Gemini sends only required parameters like Sonnet and Aurora, but in randomized key order. Tied for fastest at ~4 seconds (~400 bytes of arguments). Uses `{test}` (sensor name) as template placeholder.
+
+**Serial output:**
+
+```
+[TG] Message from user: please send me a telegram message when the test sensor > 100,
+  then wait 5s, then send me another message "hello test", then set the led to green,
+  and after another 10s set the led off
+
+--- Thinking... ---
+[Agent] 1 tool call(s) in iteration 1:
+  -> chain_create({"step3_g": 255, "sensor_name": "test", "step3_action": "led_set",
+       "threshold": 100, "step3_delay": 0, "step1_message": "Test sensor value: {test}",
+       "step4_g": 0, "step1_action": "telegram", "step2_message": "hello test",
+       "condition": "gt", "step3_r": 0, "step4_r": 0, "step4_action": "led_set",
+       "step2_action": "telegram", "step4_b": 0, "step4_delay": 10, "step3_b": 0,
+       "step2_delay": 5})
+     = Chain created: rule_04 test>100 -> telegram -> 5s -> telegram -> LED(0,255,0) -> 10s -> LED(0,0,0)
+
+I've set up a chain of actions for you:
+
+1.  When the 'test' sensor value is greater than 100, a Telegram message will be sent with the sensor's value.
+2.  5 seconds later, another Telegram message saying "hello test" will be sent.
+3.  Immediately after the second message, the onboard LED will turn green.
+4.  After another 10 seconds, the LED will turn off.
+--- (4293ms, 4756+195 tokens) ---
+```
+
+**`/rules` output:**
+
+```
+rule_01 'test step4' [ON]  chained 0 val=0 idle
+  on: led_set(0,0,0)
+rule_02 'test step3' [ON]  chained 0 val=0 idle
+  on: led_set(0,255,0)
+  chain: ->rule_01 (10s)
+rule_03 'test step2' [ON]  chained 0 val=0 idle
+  on: telegram "hello test"
+  chain: ->rule_02 (0s)
+rule_04 'test step1' [ON] test gt 100 val=0 idle
+  on: telegram "Test sensor value: {test}"
   chain: ->rule_03 (5s)
 ```
 
@@ -403,14 +478,14 @@ rule_04 'test step1' [ON] test gt 100 val=1000 FIRED
 
 ### Key Differences
 
-| | Sonnet 4.5 | Aurora Alpha | GPT-5 Mini |
-|---|---|---|---|
-| Parameters sent | Only required + relevant | Only required + relevant | Every parameter including defaults |
-| Tool call arguments | ~400 bytes | ~400 bytes | ~1000 bytes |
-| `tool_calls_json` echoed back | ~600 bytes | ~600 bytes | ~2500 bytes (JSON-escaped) |
-| Sets `interval_seconds` | No (uses default 5s) | No (uses default 5s) | Yes (set to 1s) |
-| Message template | `{value}` (generic placeholder) | `{value}` (generic placeholder) | `{test}` (sensor name — also works) |
-| Response time | ~11s (9768 prompt tokens) | **~4s** (5189 prompt tokens) | ~16s (2756 prompt tokens) |
-| Response style | Detailed markdown with numbered steps | Markdown with bold sensor names | Concise one-liner summary |
+| | Sonnet 4.5 | Aurora Alpha | Gemini 2.5 Flash | GPT-OSS-120B | GPT-5 Mini |
+|---|---|---|---|---|---|
+| Parameters sent | Only required | Only required | Only required (random key order) | Only required | Every parameter including defaults |
+| Tool call arguments | ~400 bytes | ~400 bytes | ~400 bytes | ~400 bytes | ~1000 bytes |
+| `tool_calls_json` echoed back | ~600 bytes | ~600 bytes | ~600 bytes | ~600 bytes | ~2500 bytes (JSON-escaped) |
+| Sets `interval_seconds` | No (uses default 5s) | No (uses default 5s) | No (uses default 5s) | No (uses default 5s) | Yes (set to 1s) |
+| Message template | `{value}` | `{value}` | `{test}` (sensor name) | `{value}` | `{test}` (sensor name) |
+| Response time | ~10s (9782 prompt tokens) | **~4s** (5189 prompt tokens) | **~4s** (4756 prompt tokens) | ~8s (5199 prompt tokens) | ~16s (2756 prompt tokens) |
+| Response style | Markdown with bold labels | Markdown with bold + arrows | Numbered list, plain text | Markdown with bold | Concise one-liner |
 
-All three produce identical chains. The verbose GPT-5 Mini style required increasing the `tool_calls_json` buffer from 1KB to 4KB to avoid truncation when echoing the tool call back to the API on the follow-up request.
+All five produce identical chains. The verbose GPT-5 Mini style required increasing the `tool_calls_json` buffer from 1KB to 4KB to avoid truncation when echoing the tool call back to the API on the follow-up request.

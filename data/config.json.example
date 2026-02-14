@@ -2,7 +2,7 @@
   "wifi_ssid": "",
   "wifi_pass": "",
   "api_key": "",
-  "model": "openrouter/aurora-alpha",
+  "model": "google/gemini-2.5-flash",
   "device_name": "wireclaw-01",
   "api_base_url": "",
   "nats_host": "",
