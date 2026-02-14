@@ -564,6 +564,19 @@ For Telegram: create a bot via [@BotFather](https://t.me/BotFather), get your ch
 
 For a local LLM: set `api_base_url` to your server's OpenAI-compatible endpoint, e.g. `http://192.168.1.50:11434/v1/chat/completions` for Ollama.
 
+#### Tested Models
+
+Models tested with tool calling and chain reasoning:
+
+| Model | Chain Reasoning | Notes |
+|-------|----------------|-------|
+| Claude Sonnet 4.5 | Excellent | Clean, minimal tool calls. Recommended. |
+| Aurora Alpha | Excellent | Fastest response (~4s). Clean style. |
+| GPT-5 Mini | Excellent | Works well, verbose parameters (all defaults sent). |
+| GPT-4o Mini | Basic | Fine for simple chains and testing. |
+
+See [docs/RULE-CHAINING.md](docs/RULE-CHAINING.md#appendix-a-model-comparison) for detailed output from each model.
+
 #### 3. Build and Flash
 
 The default target is ESP32-C6. To build for a different chip, pass `-e <target>`:

@@ -207,7 +207,7 @@ Rules with no chain have empty `"ci"` / `"coi"` strings and 0 delays.
 
 ## Appendix A: Model Comparison
 
-Same prompt tested with two models. Both produce a working 4-step chain, but with very different tool call styles.
+Same prompt tested with three models. All produce a working 4-step chain, but with different tool call styles and response times.
 
 ### Claude Sonnet 4.5
 
@@ -274,6 +274,55 @@ rule_07 'test step2' [ON]  chained 0 val=0 idle
 rule_08 'test step1' [ON] test gt 100 val=10 idle
   on: telegram "Test sensor exceeded 100: {value}"
   chain: ->rule_07 (5s)
+```
+
+---
+
+### Aurora Alpha
+
+Aurora is the fastest — clean parameters like Sonnet, but completes in ~4 seconds (~400 bytes of arguments).
+
+**Serial output:**
+
+```
+[TG] Message from user: please send me a telegram message when the test sensor > 100,
+  then wait 5s, then send me another message "hello test", then set the led to green,
+  and after another 10s set the led off
+
+--- Thinking... ---
+[Agent] 1 tool call(s) in iteration 1:
+  -> chain_create({"sensor_name": "test", "condition": "gt", "threshold": 100,
+       "step1_action": "telegram", "step1_message": "Test sensor: {value}",
+       "step2_action": "telegram", "step2_delay": 5, "step2_message": "hello test",
+       "step3_action": "led_set", "step3_delay": 0, "step3_r": 0, "step3_g": 255, "step3_b": 0,
+       "step4_action": "led_set", "step4_delay": 10, "step4_r": 0, "step4_g": 0, "step4_b": 0})
+     = Chain created: rule_04 test>100 -> telegram -> 5s -> telegram -> LED(0,255,0) -> 10s -> LED(0,0,0)
+
+The automation chain has been set up:
+
+1. When **test** > 100 → send a Telegram with the sensor value.
+2. After 5 seconds → send a Telegram "hello test".
+3. Immediately set the onboard LED to green (0 255 0).
+4. After 10 seconds → turn the LED off (0 0 0).
+
+Let me know if you'd like to add or modify anything!
+--- (4384ms, 5189+249 tokens) ---
+```
+
+**`/rules` output:**
+
+```
+rule_01 'test step4' [ON]  chained 0 val=0 idle
+  on: led_set(0,0,0)
+rule_02 'test step3' [ON]  chained 0 val=0 idle
+  on: led_set(0,255,0)
+  chain: ->rule_01 (10s)
+rule_03 'test step2' [ON]  chained 0 val=0 idle
+  on: telegram "hello test"
+  chain: ->rule_02 (0s)
+rule_04 'test step1' [ON] test gt 100 val=0 idle
+  on: telegram "Test sensor: {value}"
+  chain: ->rule_03 (5s)
 ```
 
 ---
@@ -354,14 +403,14 @@ rule_04 'test step1' [ON] test gt 100 val=1000 FIRED
 
 ### Key Differences
 
-| | Sonnet 4.5 | GPT-5 Mini |
-|---|---|---|
-| Parameters sent | Only required + relevant | Every parameter including defaults |
-| Tool call arguments | ~400 bytes | ~1000 bytes |
-| `tool_calls_json` echoed back | ~600 bytes | ~2500 bytes (JSON-escaped) |
-| Sets `interval_seconds` | No (uses default 5s) | Yes (set to 1s) |
-| Message template | `{value}` (generic placeholder) | `{test}` (sensor name — also works) |
-| Response time | ~11s (9768 prompt tokens) | ~16s (2756 prompt tokens) |
-| Response style | Detailed markdown with numbered steps | Concise one-liner summary |
+| | Sonnet 4.5 | Aurora Alpha | GPT-5 Mini |
+|---|---|---|---|
+| Parameters sent | Only required + relevant | Only required + relevant | Every parameter including defaults |
+| Tool call arguments | ~400 bytes | ~400 bytes | ~1000 bytes |
+| `tool_calls_json` echoed back | ~600 bytes | ~600 bytes | ~2500 bytes (JSON-escaped) |
+| Sets `interval_seconds` | No (uses default 5s) | No (uses default 5s) | Yes (set to 1s) |
+| Message template | `{value}` (generic placeholder) | `{value}` (generic placeholder) | `{test}` (sensor name — also works) |
+| Response time | ~11s (9768 prompt tokens) | **~4s** (5189 prompt tokens) | ~16s (2756 prompt tokens) |
+| Response style | Detailed markdown with numbered steps | Markdown with bold sensor names | Concise one-liner summary |
 
-Both produce identical chains. The verbose style required increasing the `tool_calls_json` buffer from 1KB to 4KB to avoid truncation when echoing the tool call back to the API on the follow-up request.
+All three produce identical chains. The verbose GPT-5 Mini style required increasing the `tool_calls_json` buffer from 1KB to 4KB to avoid truncation when echoing the tool call back to the API on the follow-up request.
