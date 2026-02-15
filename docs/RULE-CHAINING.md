@@ -44,7 +44,7 @@ User via Telegram:
 
 > "please send me a telegram message when the test sensor > 100, then wait 5s, then send me another message "hello test", then set the led to green, and after another 10s set the led off"
 
-The AI makes a single `chain_create` tool call. The firmware creates 4 linked rules. Both examples are tested with the same prompt — see [Appendix A](#appendix-a-model-comparison) for full serial output from each model.
+The AI makes a single `chain_create` tool call. The firmware creates 4 linked rules. Both examples are tested with the same prompt - see [Appendix A](#appendix-a-model-comparison) for full serial output from each model.
 
 ## How It Works Internally
 
@@ -75,7 +75,7 @@ At the end of every `rulesEvaluate()` call, the queue is processed:
 2. If the target itself has a chain link, enqueue that too (continuing the chain)
 3. Clear the processed entry
 
-Delays are **non-blocking** — the main loop continues running while waiting.
+Delays are **non-blocking** - the main loop continues running while waiting.
 
 ### Deduplication
 
@@ -111,7 +111,7 @@ If `chain_delay_seconds` is set without a `chain_rule`, the tool result warns:
 
 ### Dangling References
 
-If a chain target rule is deleted, the chain silently becomes a no-op. The source rule continues to function normally — only the chain link is broken.
+If a chain target rule is deleted, the chain silently becomes a no-op. The source rule continues to function normally - only the chain link is broken.
 
 ## Advanced: Manual Chaining with `rule_create`
 
@@ -126,7 +126,7 @@ For use cases not covered by `chain_create` (OFF-chains, custom linking), `rule_
 
 **ON-chain** fires after the rule's ON action triggers. **OFF-chain** fires after the rule's OFF action triggers (condition clears).
 
-Example — motion sensor with delayed off:
+Example - motion sensor with delayed off:
 
 ```
 rule_create(rule_name="Lights off",
@@ -185,10 +185,10 @@ Rules with no chain have empty `"ci"` / `"coi"` strings and 0 delays.
 - **Max 5 steps** per `chain_create` call. For longer sequences, use manual `rule_create` with `chain_rule`.
 - **Max 8 pending chain entries** at any time (`MAX_PENDING_CHAINS`). If the queue is full, new chain triggers are dropped with a serial warning.
 - **Max chain depth 8** per evaluation cycle (`MAX_CHAIN_DEPTH`). Deeper chains or circular chains are broken.
-- **One chain target per direction** — each rule can chain to one rule on ON and one on OFF. For fan-out (one rule triggering multiple), create intermediate chained rules.
-- **No chain cancellation** — once a chain is queued, it fires when the delay expires even if the source condition clears.
-- **Delays are approximate** — the chain fires on the first `rulesEvaluate()` call after the delay expires. With a 5s rule interval, actual delay could be up to 5s longer than specified.
-- **Same-target deduplication** — if a rule is already pending in the queue, a second enqueue for the same target is skipped. This prevents spam but means rapid re-triggering may miss a chain.
+- **One chain target per direction** - each rule can chain to one rule on ON and one on OFF. For fan-out (one rule triggering multiple), create intermediate chained rules.
+- **No chain cancellation** - once a chain is queued, it fires when the delay expires even if the source condition clears.
+- **Delays are approximate** - the chain fires on the first `rulesEvaluate()` call after the delay expires. With a 5s rule interval, actual delay could be up to 5s longer than specified.
+- **Same-target deduplication** - if a rule is already pending in the queue, a second enqueue for the same target is skipped. This prevents spam but means rapid re-triggering may miss a chain.
 
 ## RAM Cost
 
@@ -211,7 +211,7 @@ Same prompt tested with five models. All produce a working 4-step chain, but wit
 
 ### Claude Sonnet 4.5
 
-Sonnet sends only the required parameters — clean and minimal (~400 bytes of arguments).
+Sonnet sends only the required parameters - clean and minimal (~400 bytes of arguments).
 
 **Serial output:**
 
@@ -260,7 +260,7 @@ rule_04 'test step1' [ON] test gt 100 val=0 idle
 
 ### Aurora Alpha
 
-Aurora is the fastest — clean parameters like Sonnet, but completes in ~4 seconds (~400 bytes of arguments).
+Aurora is the fastest - clean parameters like Sonnet, but completes in ~4 seconds (~400 bytes of arguments).
 
 **Serial output:**
 
@@ -404,7 +404,7 @@ rule_04 'test step1' [ON] test gt 100 val=0 idle
 
 ### GPT-5 Mini
 
-GPT-5 Mini fills in every parameter including unused ones with defaults — functionally identical but verbose (~1000 bytes of arguments, ~2500 bytes JSON-escaped in the echo-back).
+GPT-5 Mini fills in every parameter including unused ones with defaults - functionally identical but verbose (~1000 bytes of arguments, ~2500 bytes JSON-escaped in the echo-back).
 
 **Serial output:**
 
@@ -434,7 +434,7 @@ GPT-5 Mini fills in every parameter including unused ones with defaults — func
        "step5_actuator":"","step5_nats_subject":""})
      = Chain created: rule_04 test>100 -> telegram -> 5s -> telegram -> LED(0,255,0) -> 10s -> LED(0,0,0)
 
-Done — chain automation created as rule_04: when test > 100 send Telegram, after 5s
+Done - chain automation created as rule_04: when test > 100 send Telegram, after 5s
 send "hello test", then set LED green, and after 10s turn LED off.
 --- (16054ms, 2756+45 tokens) ---
 ```
