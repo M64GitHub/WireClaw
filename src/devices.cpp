@@ -218,9 +218,11 @@ float deviceReadSensor(const Device *dev) {
  * Actuator Control
  *============================================================================*/
 
-bool deviceSetActuator(const Device *dev, int value) {
+bool deviceSetActuator(Device *dev, int value) {
     if (!dev || !dev->used || !deviceIsActuator(dev->kind)) return false;
     if (dev->pin == PIN_NONE) return false;
+
+    dev->last_value = value;
 
     switch (dev->kind) {
         case DEV_ACTUATOR_DIGITAL:

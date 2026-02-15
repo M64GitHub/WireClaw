@@ -48,6 +48,8 @@ struct Device {
     uint16_t    nats_sid;
     /* Serial text baud rate (only meaningful for DEV_SENSOR_SERIAL_TEXT) */
     uint32_t    baud;
+    /* Last value set on actuator (for display; not persisted, resets on boot) */
+    int         last_value;
 };
 
 /* Initialize device registry - loads from /devices.json, auto-registers chip_temp */
@@ -72,7 +74,7 @@ Device *deviceFind(const char *name);
 float deviceReadSensor(const Device *dev);
 
 /* Set an actuator device. value: 0/1 for digital/relay, 0-255 for PWM. Returns true on success. */
-bool deviceSetActuator(const Device *dev, int value);
+bool deviceSetActuator(Device *dev, int value);
 
 /* Check if a DeviceKind is a sensor type */
 bool deviceIsSensor(DeviceKind kind);

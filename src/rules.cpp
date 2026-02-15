@@ -192,6 +192,7 @@ bool ruleDelete(const char *id) {
         for (int i = 0; i < MAX_RULES; i++) {
             g_rules[i].used = false;
         }
+        g_rule_counter = 0;
         return true;
     }
 
