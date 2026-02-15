@@ -12,6 +12,8 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include "version.h"
+#include "rules.h"
+#include "devices.h"
 
 /* Externs from main.cpp */
 extern char cfg_wifi_ssid[64];
@@ -309,6 +311,220 @@ static void handleReboot() {
 }
 
 /*============================================================================
+ * Rules API
+ *============================================================================*/
+
+/** Format a single action into buf. Returns chars written. */
+static int wcFormatAction(char *buf, int len, ActionType act, const char *actuator,
+                          uint8_t pin, int32_t value, const char *nats_pay) {
+    switch (act) {
+    case ACT_LED_SET:
+        return snprintf(buf, len, "led_set(%d,%d,%d)",
+            (value>>16)&0xFF, (value>>8)&0xFF, value&0xFF);
+    case ACT_TELEGRAM:
+        return snprintf(buf, len, "telegram \"%s\"", nats_pay);
+    case ACT_NATS_PUBLISH:
+        return snprintf(buf, len, "nats_publish \"%s\"", nats_pay);
+    case ACT_SERIAL_SEND:
+        return snprintf(buf, len, "serial_send \"%s\"", nats_pay);
+    case ACT_ACTUATOR:
+        return snprintf(buf, len, "actuator %s val=%d", actuator, (int)value);
+    case ACT_GPIO_WRITE:
+        return snprintf(buf, len, "gpio_write pin=%d val=%d", pin, (int)value);
+    default:
+        return snprintf(buf, len, "%s", actionTypeName(act));
+    }
+}
+
+static void handleGetRules() {
+    static char buf[4096];
+    int w = 0;
+
+    const Rule *rules = ruleGetAll();
+    w += snprintf(buf + w, sizeof(buf) - w, "[");
+
+    bool first = true;
+    for (int i = 0; i < MAX_RULES && w < (int)sizeof(buf) - 512; i++) {
+        if (!rules[i].used) continue;
+        const Rule *r = &rules[i];
+
+        if (!first) w += snprintf(buf + w, sizeof(buf) - w, ",");
+        first = false;
+
+        /* Source description */
+        char src[80];
+        if (r->condition == COND_CHAINED) {
+            snprintf(src, sizeof(src), "chained");
+        } else if (r->sensor_name[0]) {
+            snprintf(src, sizeof(src), "%s %s %d",
+                r->sensor_name, conditionOpName(r->condition), (int)r->threshold);
+        } else {
+            snprintf(src, sizeof(src), "gpio %s %d",
+                conditionOpName(r->condition), (int)r->threshold);
+        }
+
+        /* ON/OFF action descriptions */
+        char on_act[128], off_act[128];
+        wcFormatAction(on_act, sizeof(on_act), r->on_action, r->on_actuator,
+                       r->on_pin, r->on_value, r->on_nats_pay);
+        off_act[0] = '\0';
+        if (r->has_off_action)
+            wcFormatAction(off_act, sizeof(off_act), r->off_action, r->off_actuator,
+                           r->off_pin, r->off_value, r->off_nats_pay);
+
+        /* Chain description */
+        char chain[64];
+        chain[0] = '\0';
+        int cw = 0;
+        if (r->chain_id[0])
+            cw += snprintf(chain + cw, sizeof(chain) - cw, "->%s (%us)",
+                r->chain_id, (unsigned)(r->chain_delay_ms / 1000));
+        if (r->chain_off_id[0])
+            snprintf(chain + cw, sizeof(chain) - cw, "%soff->%s (%us)",
+                cw ? " " : "", r->chain_off_id, (unsigned)(r->chain_off_delay_ms / 1000));
+
+        /* JSON-escape all display strings */
+        char e_name[64], e_on[160], e_off[160], e_src[96], e_chain[80];
+        jsonEscapeBuf(e_name, sizeof(e_name), r->name);
+        jsonEscapeBuf(e_on, sizeof(e_on), on_act);
+        jsonEscapeBuf(e_off, sizeof(e_off), off_act);
+        jsonEscapeBuf(e_src, sizeof(e_src), src);
+        jsonEscapeBuf(e_chain, sizeof(e_chain), chain);
+
+        w += snprintf(buf + w, sizeof(buf) - w,
+            "{\"id\":\"%s\",\"name\":\"%s\",\"en\":%s,"
+            "\"src\":\"%s\",\"on\":\"%s\",\"off\":\"%s\","
+            "\"chain\":\"%s\",\"val\":%d,\"fired\":%s}",
+            r->id, e_name, r->enabled ? "true" : "false",
+            e_src, e_on, e_off, e_chain,
+            (int)r->last_reading, r->fired ? "true" : "false");
+    }
+
+    w += snprintf(buf + w, sizeof(buf) - w, "]");
+    server.send(200, "application/json", buf);
+}
+
+static void handleDeleteRule() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"no body\"}");
+        return;
+    }
+    char id[RULE_ID_LEN];
+    if (!wcJsonGetString(server.arg("plain").c_str(), "id", id, sizeof(id))) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing id\"}");
+        return;
+    }
+    bool ok = ruleDelete(id);
+    if (ok) rulesSave();
+    server.send(ok ? 200 : 404, "application/json",
+        ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"not found\"}");
+}
+
+/*============================================================================
+ * Devices API
+ *============================================================================*/
+
+static bool isInternalDevice(DeviceKind kind) {
+    return kind == DEV_SENSOR_INTERNAL_TEMP ||
+           kind == DEV_SENSOR_CLOCK_HOUR ||
+           kind == DEV_SENSOR_CLOCK_MINUTE ||
+           kind == DEV_SENSOR_CLOCK_HHMM;
+}
+
+static void handleGetDevices() {
+    static char buf[2048];
+    int w = 0;
+
+    const Device *devs = deviceGetAll();
+    w += snprintf(buf + w, sizeof(buf) - w, "[");
+
+    bool first = true;
+    for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(buf) - 256; i++) {
+        if (!devs[i].used) continue;
+        const Device *d = &devs[i];
+
+        if (!first) w += snprintf(buf + w, sizeof(buf) - w, ",");
+        first = false;
+
+        /* Read current value */
+        char val_str[32];
+        if (deviceIsActuator(d->kind)) {
+            if (d->kind == DEV_ACTUATOR_PWM)
+                snprintf(val_str, sizeof(val_str), "%d/255", d->last_value);
+            else
+                snprintf(val_str, sizeof(val_str), "%s", d->last_value ? "ON" : "OFF");
+        } else {
+            float val = deviceReadSensor(d);
+            if (d->unit[0])
+                snprintf(val_str, sizeof(val_str), "%.1f %s", val, d->unit);
+            else
+                snprintf(val_str, sizeof(val_str), "%.1f", val);
+        }
+
+        /* Pin display */
+        char pin_str[16];
+        if (d->pin == PIN_NONE)
+            snprintf(pin_str, sizeof(pin_str), "virtual");
+        else
+            snprintf(pin_str, sizeof(pin_str), "%d", d->pin);
+
+        /* Extra info: NATS subject or serial baud */
+        char extra[48];
+        extra[0] = '\0';
+        if (d->kind == DEV_SENSOR_NATS_VALUE && d->nats_subject[0])
+            snprintf(extra, sizeof(extra), "%s", d->nats_subject);
+        else if (d->kind == DEV_SENSOR_SERIAL_TEXT && d->baud > 0)
+            snprintf(extra, sizeof(extra), "%u baud", (unsigned)d->baud);
+
+        /* Last message for NATS and serial_text sensors */
+        char msg[80];
+        msg[0] = '\0';
+        if (d->kind == DEV_SENSOR_NATS_VALUE && d->nats_msg[0])
+            snprintf(msg, sizeof(msg), "%s", d->nats_msg);
+        else if (d->kind == DEV_SENSOR_SERIAL_TEXT && serialTextGetMsg()[0])
+            snprintf(msg, sizeof(msg), "%s", serialTextGetMsg());
+
+        /* JSON-escape name, extra, msg */
+        char e_name[48], e_extra[64], e_msg[96];
+        jsonEscapeBuf(e_name, sizeof(e_name), d->name);
+        jsonEscapeBuf(e_extra, sizeof(e_extra), extra);
+        jsonEscapeBuf(e_msg, sizeof(e_msg), msg);
+
+        w += snprintf(buf + w, sizeof(buf) - w,
+            "{\"name\":\"%s\",\"kind\":\"%s\",\"pin\":\"%s\","
+            "\"value\":\"%s\",\"extra\":\"%s\",\"msg\":\"%s\",\"internal\":%s}",
+            e_name, deviceKindName(d->kind), pin_str,
+            val_str, e_extra, e_msg,
+            isInternalDevice(d->kind) ? "true" : "false");
+    }
+
+    w += snprintf(buf + w, sizeof(buf) - w, "]");
+    server.send(200, "application/json", buf);
+}
+
+static void handleDeleteDevice() {
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"no body\"}");
+        return;
+    }
+    char name[DEV_NAME_LEN];
+    if (!wcJsonGetString(server.arg("plain").c_str(), "name", name, sizeof(name))) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing name\"}");
+        return;
+    }
+    /* Reject deletion of internal devices */
+    Device *dev = deviceFind(name);
+    if (dev && isInternalDevice(dev->kind)) {
+        server.send(403, "application/json", "{\"ok\":false,\"error\":\"cannot delete internal device\"}");
+        return;
+    }
+    bool ok = deviceRemove(name);
+    if (ok) devicesSave();
+    server.send(ok ? 200 : 404, "application/json",
+        ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"not found\"}");
+}
+
+/*============================================================================
  * HTML UI (PROGMEM)
  *============================================================================*/
 
@@ -376,6 +592,23 @@ text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.25rem}
 .status-item .value{font-size:0.95rem;color:var(--text);font-family:var(--mono);word-break:break-all}
 .status-item .value.accent{color:var(--accent)}
 .status-item.full{grid-column:1/-1}
+.rule{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:0.75rem}
+.rule-hdr{display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem}
+.rule-id{font-family:var(--mono);font-size:0.8rem;color:var(--accent);font-weight:600}
+.rule-name{flex:1;font-size:0.85rem;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font-size:0.65rem;font-weight:700;font-family:var(--mono);padding:0.15rem 0.5rem;
+border-radius:9999px;letter-spacing:0.04em}
+.badge.on{background:var(--accent-dim);color:var(--accent);border:1px solid var(--border-a)}
+.badge.off{background:rgba(255,71,87,0.12);color:var(--red);border:1px solid rgba(255,71,87,0.25)}
+.del{background:none;border:none;color:var(--text3);font-size:1.1rem;cursor:pointer;
+padding:0.1rem 0.4rem;border-radius:4px;line-height:1;transition:all 0.15s}
+.del:hover{color:var(--red);background:rgba(255,71,87,0.12)}
+.rule-meta{font-family:var(--mono);font-size:0.75rem;color:var(--text2);margin-bottom:0.3rem}
+.rule-act{font-family:var(--mono);font-size:0.75rem;color:var(--text3)}
+.rule-act .arrow{color:var(--accent)}
+.rule-act.off-act .arrow{color:var(--red)}
+.rule-act.chain-act{color:var(--text3);font-style:italic}
+.rules-empty{text-align:center;color:var(--text3);padding:2rem 0;font-size:0.9rem}
 @media(max-width:480px){
 .wrap{padding:0.75rem}
 .card{padding:1rem}
@@ -392,6 +625,8 @@ nav button{padding:0.4rem 0.6rem;font-size:0.8rem}
 <button class="active" onclick="showTab('config')">Config</button>
 <button onclick="showTab('prompt')">Prompt</button>
 <button onclick="showTab('memory')">Memory</button>
+<button onclick="showTab('devices')">Devices</button>
+<button onclick="showTab('rules')">Rules</button>
 <button onclick="showTab('status')">Status</button>
 </nav>
 
@@ -457,6 +692,23 @@ nav button{padding:0.4rem 0.6rem;font-size:0.8rem}
 </div>
 </div>
 
+<div id="devices" class="tab">
+<div id="devices-list"></div>
+<div class="actions">
+<button class="btn btn-outline" onclick="loadDevices()">Refresh</button>
+</div>
+<p class="hint" style="margin-top:0.75rem">To register devices, chat with WireClaw.</p>
+</div>
+
+<div id="rules" class="tab">
+<div id="rules-list"></div>
+<div class="actions">
+<button class="btn btn-outline" onclick="loadRules()">Refresh</button>
+<button class="btn btn-danger" onclick="deleteAllRules()">Delete All</button>
+</div>
+<p class="hint" style="margin-top:0.75rem">To create rules, chat with WireClaw.</p>
+</div>
+
 <div id="status" class="tab">
 <div class="card">
 <div class="status-grid" id="status-grid"></div>
@@ -479,6 +731,8 @@ event.target.classList.add('active');
 if(id==='status')loadStatus();
 if(id==='prompt')loadPrompt();
 if(id==='memory')loadMemory();
+if(id==='devices')loadDevices();
+if(id==='rules')loadRules();
 }
 function toast(msg,ok){
 var t=document.getElementById('toast');
@@ -543,6 +797,64 @@ h+='<div class="status-item'+(i.full?' full':'')+'"><div class="label">'+i.l+
 document.getElementById('status-grid').innerHTML=h;
 }).catch(e=>toast('Failed to load status',false));
 }
+function loadDevices(){
+fetch('/api/devices').then(r=>r.json()).then(devs=>{
+var c=document.getElementById('devices-list');
+if(!devs.length){c.innerHTML='<div class="rules-empty">No devices registered.</div>';return}
+var h='';devs.forEach(d=>{
+h+='<div class="rule"><div class="rule-hdr"><span class="rule-id">'+d.name+'</span>';
+h+='<span class="rule-name">'+d.kind+'</span>';
+h+='<span class="badge on">'+(d.pin==='virtual'?'virtual':'pin '+d.pin)+'</span>';
+if(!d.internal)h+='<button class="del" onclick="deleteDevice(\''+d.name+'\')">&times;</button>';
+h+='</div>';
+h+='<div class="rule-meta">value: '+d.value+'</div>';
+if(d.extra)h+='<div class="rule-act"><span class="arrow">&rarr;</span> '+d.extra+'</div>';
+if(d.msg)h+='<div class="rule-act"><span class="arrow">&rarr;</span> "'+d.msg+'"</div>';
+h+='</div>'});
+c.innerHTML=h;
+}).catch(e=>toast('Failed to load devices',false));
+}
+function deleteDevice(name){
+if(!confirm('Delete device "'+name+'"?'))return;
+fetch('/api/devices/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({name:name})}).then(r=>r.json()).then(j=>{
+toast(j.ok?'Deleted':(j.error||'Failed'),j.ok);
+if(j.ok)loadDevices();
+}).catch(e=>toast('Delete failed',false));
+}
+function loadRules(){
+fetch('/api/rules').then(r=>r.json()).then(rules=>{
+var c=document.getElementById('rules-list');
+if(!rules.length){c.innerHTML='<div class="rules-empty">No rules defined.</div>';return}
+var h='';rules.forEach(r=>{
+h+='<div class="rule"><div class="rule-hdr"><span class="rule-id">'+r.id+'</span>';
+h+='<span class="rule-name">'+r.name+'</span>';
+h+='<span class="badge '+(r.en?'on':'off')+'">'+(r.en?'ON':'OFF')+'</span>';
+h+='<button class="del" onclick="deleteRule(\''+r.id+'\')">&times;</button></div>';
+h+='<div class="rule-meta">'+r.src+'&ensp;val='+r.val+'&ensp;'+(r.fired?'FIRED':'idle')+'</div>';
+h+='<div class="rule-act"><span class="arrow">&rarr;</span> '+r.on+'</div>';
+if(r.off)h+='<div class="rule-act off-act"><span class="arrow">&larr;</span> '+r.off+'</div>';
+if(r.chain)h+='<div class="rule-act chain-act">chain: '+r.chain+'</div>';
+h+='</div>'});
+c.innerHTML=h;
+}).catch(e=>toast('Failed to load rules',false));
+}
+function deleteRule(id){
+if(!confirm('Delete '+id+'?'))return;
+fetch('/api/rules/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({id:id})}).then(r=>r.json()).then(j=>{
+toast(j.ok?'Deleted':(j.error||'Failed'),j.ok);
+if(j.ok)loadRules();
+}).catch(e=>toast('Delete failed',false));
+}
+function deleteAllRules(){
+if(!confirm('Delete ALL rules? This cannot be undone.'))return;
+fetch('/api/rules/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+body:'{"id":"all"}'}).then(r=>r.json()).then(j=>{
+toast(j.ok?'All rules deleted':'Failed',j.ok);
+if(j.ok)loadRules();
+}).catch(e=>toast('Delete failed',false));
+}
 function reboot(){
 if(!confirm('Reboot device?'))return;
 fetch('/api/reboot',{method:'POST'}).then(()=>{
@@ -581,6 +893,10 @@ void webConfigSetup() {
     server.on("/api/memory", HTTP_GET, handleGetMemory);
     server.on("/api/memory", HTTP_POST, handlePostMemory);
     server.on("/api/status", HTTP_GET, handleGetStatus);
+    server.on("/api/devices", HTTP_GET, handleGetDevices);
+    server.on("/api/devices/delete", HTTP_POST, handleDeleteDevice);
+    server.on("/api/rules", HTTP_GET, handleGetRules);
+    server.on("/api/rules/delete", HTTP_POST, handleDeleteRule);
     server.on("/api/reboot", HTTP_POST, handleReboot);
 
     server.begin();
