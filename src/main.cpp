@@ -22,6 +22,7 @@
 #include "rules.h"
 #include "setup_portal.h"
 #include "version.h"
+#include "web_config.h"
 #include <nats_atoms.h>
 
 /*============================================================================
@@ -33,18 +34,18 @@
 #define MAX_HISTORY      6  /* Keep last N user+assistant turns (pairs) */
 
 /* Runtime config - loaded from LittleFS, falls back to secrets.h */
-static char cfg_wifi_ssid[64];
-static char cfg_wifi_pass[64];
-static char cfg_api_key[128];
-static char cfg_model[64];
-static char cfg_device_name[32];
-static char cfg_api_base_url[128];
-static char cfg_nats_host[64];
-static int  cfg_nats_port = 4222;
-static char cfg_telegram_token[64];
-static char cfg_telegram_chat_id[16];
-static char cfg_system_prompt[4096];
-static char cfg_timezone[64];
+char cfg_wifi_ssid[64];
+char cfg_wifi_pass[64];
+char cfg_api_key[128];
+char cfg_model[64];
+char cfg_device_name[32];
+char cfg_api_base_url[128];
+char cfg_nats_host[64];
+int  cfg_nats_port = 4222;
+char cfg_telegram_token[64];
+char cfg_telegram_chat_id[16];
+char cfg_system_prompt[4096];
+char cfg_timezone[64];
 int cfg_telegram_cooldown = 3;  /* seconds, 0 = disabled */
 
 /* Placeholder defaults - overridden by LittleFS config.json */
@@ -91,6 +92,10 @@ void ledGreen()  { led(0, 255, 0); }
 void ledCyan()   { led(0, 255, 255); }
 void ledBlue()   { led(0, 0, 255); }
 void ledPurple() { led(128, 0, 255); }
+
+/* Deferred reboot: allows Telegram ACK cycle to complete before restart */
+bool          g_reboot_pending = false;
+unsigned long g_reboot_at      = 0;
 
 /*============================================================================
  * LittleFS Config Loading
@@ -798,9 +803,10 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
         if (g_nats_connected) {
             natsClient.publish(natsSubjectEvents, "Rebooting...");
         }
-        delay(500);
-        ESP.restart();
-        return true; /* never reached */
+        g_reboot_pending = true;
+        g_reboot_at = millis() + 8000; /* 8s: enough for TG response + ACK poll */
+        snprintf(buf, buf_len, "Rebooting in a few seconds...");
+        return true;
     }
     return false;
 }
@@ -950,7 +956,6 @@ static bool connectNats() {
 static WiFiClientSecure tgClient;
 bool g_telegram_enabled = false;
 static int  tgLastUpdateId = 0;
-static bool tgNeedFlush = true;   /* skip pending msgs on first poll */
 static unsigned long tgLastPoll = 0;
 
 /* Long-poll state machine */
@@ -1097,7 +1102,9 @@ static void telegramTick() {
     switch (tgState) {
 
     case TG_IDLE: {
-        if (now - tgLastPoll < TG_RECONNECT_MS) return;
+        /* Skip reconnect delay when reboot pending (fast ACK) */
+        unsigned long wait = g_reboot_pending ? 500 : TG_RECONNECT_MS;
+        if (now - tgLastPoll < wait) return;
 
         tgClient.stop();
         if (!tgClient.connect(TG_HOST, TG_PORT)) {
@@ -1109,15 +1116,9 @@ static void telegramTick() {
         /* Build getUpdates request */
         static char body[128];
         int body_len;
-        if (tgNeedFlush) {
-            /* First poll after boot: skip all pending messages */
-            body_len = snprintf(body, sizeof(body),
-                "{\"offset\":-1,\"limit\":1,\"timeout\":0}");
-        } else {
-            body_len = snprintf(body, sizeof(body),
-                "{\"offset\":%d,\"limit\":1,\"timeout\":%d}",
-                tgLastUpdateId + 1, TG_LONG_POLL_S);
-        }
+        body_len = snprintf(body, sizeof(body),
+            "{\"offset\":%d,\"limit\":1,\"timeout\":%d}",
+            tgLastUpdateId + 1, g_reboot_pending ? 0 : TG_LONG_POLL_S);
 
         static char httpReq[512];
         int hdr_len = snprintf(httpReq, sizeof(httpReq),
@@ -1214,12 +1215,6 @@ static void telegramTick() {
         if (g_debug) Serial.printf("[TG] update_id=%d (last=%d)\n", update_id, tgLastUpdateId);
         if (update_id <= tgLastUpdateId) return;
         tgLastUpdateId = update_id;
-
-        if (tgNeedFlush) {
-            tgNeedFlush = false;
-            Serial.printf("[TG] Flushed pending messages (last_id=%d)\n", update_id);
-            return;
-        }
 
         /* Extract chat_id from message.chat.id */
         const char *chat_id_str = strstr(resp, "\"chat\"");
@@ -1444,12 +1439,17 @@ void setup() {
         tgClient.setTimeout(30); /* seconds - matches LLM client pattern */
         tgLastPoll = millis();   /* delay first poll by one interval */
         Serial.printf("Telegram: enabled (chat_id %s)\n", cfg_telegram_chat_id);
-        char startMsg[64];
-        snprintf(startMsg, sizeof(startMsg), "WireClaw v%s started", WIRECLAW_VERSION);
+        char startMsg[160];
+        snprintf(startMsg, sizeof(startMsg),
+            "WireClaw v%s started\nConfig: http://%s/\nmDNS: http://%s.local/",
+            WIRECLAW_VERSION, WiFi.localIP().toString().c_str(), cfg_device_name);
         tgSendMessage(startMsg);
     } else {
         Serial.printf("Telegram: disabled (no telegram_token/telegram_chat_id in config)\n");
     }
+
+    /* Web config portal (HTTP on port 80 + mDNS) */
+    webConfigSetup();
 
     Serial.printf("\nReady! Free heap: %u bytes\n", ESP.getFreeHeap());
     Serial.printf("Type a message and press Enter. /help for commands.\n\n");
@@ -1485,6 +1485,9 @@ void loop() {
         Serial.printf("> ");
     }
 
+    /* Process web config requests */
+    webConfigLoop();
+
     /* Process NATS */
     if (g_nats_enabled) {
         if (natsClient.connected()) {
@@ -1513,6 +1516,13 @@ void loop() {
 
     /* Poll serial_text UART for incoming data */
     serialTextPoll();
+
+    /* Deferred reboot (allows Telegram ACK cycle to complete) */
+    if (g_reboot_pending && millis() >= g_reboot_at) {
+        Serial.printf("[Reboot] Deferred restart now\n");
+        delay(200);
+        ESP.restart();
+    }
 
     /* Read serial input character by character */
     while (Serial.available()) {

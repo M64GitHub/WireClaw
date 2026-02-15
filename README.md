@@ -494,6 +494,7 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 - **Telegram Bot** - chat with your ESP32 from your phone
 - **NATS Virtual Sensors** - subscribe to any NATS subject as a sensor, trigger rules from external systems (Python, Home Assistant, PLCs, other WireClaws)
 - **NATS Integration** - device-to-device messaging, commands, and rule-triggered events
+- **Web Config Portal** - browser-based UI at `http://<device-ip>/` for editing config, system prompt, memory, and viewing device status. mDNS: `http://<device-name>.local/`
 - **Serial Interface** - local chat and commands over USB (115200 baud)
 - **Conversation History** - 6-turn circular buffer, persisted across reboots
 
@@ -639,6 +640,55 @@ The portal times out after 5 minutes and reboots to retry. The LED pulses cyan w
 | Timezone | No | `UTC0` |
 
 \* Required unless using a local LLM via API Base URL.
+
+To change configuration after initial setup without reflashing, use the **Web Config Portal** (see below).
+
+## Web Config Portal
+
+After initial setup, you can change any configuration from your browser - no USB cable or reflashing needed.
+
+Open `http://<device-ip>/` or `http://<device-name>.local/` (mDNS) from any device on the same network. The URL is printed to serial and Telegram on every boot.
+
+### Tabs
+
+| Tab | What it does |
+|-----|-------------|
+| **Config** | Edit all 12 config fields (WiFi, API key, model, NATS, Telegram, timezone). Sensitive fields are masked. **Requires reboot to apply.** |
+| **System Prompt** | Edit the AI's personality and instructions. **Applied immediately**, no reboot needed. |
+| **Memory** | Edit the AI's persistent memory (`/memory.txt`). Active on next conversation. |
+| **Status** | Version, uptime, heap, WiFi SSID/IP/RSSI, model, NATS/Telegram status. Refresh and reboot buttons. |
+
+### REST API
+
+For scripting and automation, the web config exposes a JSON/text API:
+
+| Endpoint | Method | Content-Type | Description |
+|----------|--------|-------------|-------------|
+| `/api/config` | GET | application/json | Current config (sensitive fields masked) |
+| `/api/config` | POST | application/json | Merge with existing config, write to flash |
+| `/api/prompt` | GET | text/plain | Current system prompt |
+| `/api/prompt` | POST | text/plain | Update system prompt (live, no reboot) |
+| `/api/memory` | GET | text/plain | AI memory contents |
+| `/api/memory` | POST | text/plain | Update AI memory |
+| `/api/status` | GET | application/json | Device status (version, uptime, heap, WiFi, etc.) |
+| `/api/reboot` | POST | - | Reboot the device |
+
+Example:
+
+```bash
+# Read status
+curl http://wireclaw-01.local/api/status
+
+# Update system prompt
+curl -X POST -H "Content-Type: text/plain" \
+  -d "You are a helpful assistant." \
+  http://wireclaw-01.local/api/prompt
+
+# Update config (only changed fields - masked values are preserved)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"model":"google/gemini-2.5-flash"}' \
+  http://wireclaw-01.local/api/config
+```
 
 ## Device Registry
 
@@ -1169,11 +1219,11 @@ Created automatically on flash, persisted across reboots:
 ## Resource Usage
 
 ```
-RAM:   55.6% (182KB of 320KB)
-Flash: 37.4% (1.2MB of 3.3MB)
+RAM:   59.8% (196KB of 320KB)
+Flash: 50.8% (1.3MB of 2.5MB)
 ```
 
-Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (20KB), conversation history, persistent memory (512B), TLS stack. Setup portal HTML is stored in flash (PROGMEM), not RAM.
+Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (20KB), conversation history, persistent memory (512B), TLS stack, WebServer + mDNS (~4.5KB RAM). Setup portal and web config HTML are stored in flash (PROGMEM), not RAM.
 
 ## License
 
