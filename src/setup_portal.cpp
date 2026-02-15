@@ -51,7 +51,7 @@ button:hover{background:#00b894}
 <input type="text" name="api_key" placeholder="sk-or-v1-...">
 <p class="opt">Required unless using local LLM</p>
 <label>Model</label>
-<input type="text" name="model" value="openai/gpt-4o-mini">
+<input type="text" name="model" value="google/gemini-2.5-flash">
 <label>Device Name</label>
 <input type="text" name="device_name" value="wireclaw-01">
 <div class="sep"></div>
@@ -178,7 +178,7 @@ static bool saveConfig(const char *body) {
     f.print("  \"api_key\": "); writeJsonEscaped(f, val); f.print(",\n");
 
     formGetField(body, "model", val, sizeof(val));
-    if (val[0] == '\0') strncpy(val, "openai/gpt-4o-mini", sizeof(val));
+    if (val[0] == '\0') strncpy(val, "google/gemini-2.5-flash", sizeof(val));
     f.print("  \"model\": "); writeJsonEscaped(f, val); f.print(",\n");
 
     formGetField(body, "device_name", val, sizeof(val));
@@ -201,7 +201,7 @@ static bool saveConfig(const char *body) {
     formGetField(body, "telegram_chat_id", val, sizeof(val));
     f.print("  \"telegram_chat_id\": "); writeJsonEscaped(f, val); f.print(",\n");
 
-    f.print("  \"telegram_cooldown\": \"60\",\n");
+    f.print("  \"telegram_cooldown\": \"15\",\n");
 
     formGetField(body, "timezone", val, sizeof(val));
     if (val[0] == '\0') strncpy(val, "UTC0", sizeof(val));

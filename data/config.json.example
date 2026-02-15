@@ -9,6 +9,6 @@
   "nats_port": "4222",
   "telegram_token": "",
   "telegram_chat_id": "",
-  "telegram_cooldown": "60",
+  "telegram_cooldown": "15",
   "timezone": "UTC0"
 }
