@@ -31,7 +31,7 @@
 
 #define LED_BRIGHTNESS   20
 #define SERIAL_BUF_SIZE  512
-#define MAX_HISTORY      6  /* Keep last N user+assistant turns (pairs) */
+#define MAX_HISTORY      4  /* Keep last N user+assistant turns (pairs) */
 
 /* Runtime config - loaded from LittleFS, falls back to secrets.h */
 char cfg_wifi_ssid[64];
@@ -213,10 +213,13 @@ NatsClient natsClient;
 bool g_nats_enabled = false;
 bool g_nats_connected = false;
 static unsigned long natsLastReconnect = 0;
-#define NATS_RECONNECT_DELAY_MS 5000
+#define NATS_RECONNECT_DELAY_MS 30000
 static char natsSubjectChat[64];
 static char natsSubjectCmd[64];
 char natsSubjectEvents[64];
+static char natsSubjectToolExec[64];
+static char natsSubjectCapabilities[64];
+static const char natsSubjectDiscover[] = "_wc.discover";
 
 /* Conversation history */
 struct Turn {
@@ -393,6 +396,15 @@ static char memoryBuf[512]; /* persistent AI memory from /memory.txt */
  * (valid until next call), or nullptr on error.
  */
 const char *chatWithLLM(const char *userMessage) {
+    /* Re-entrancy guard: remote_chat calls natsClient.process() which can
+     * dispatch onNatsChat, leading to nested chatWithLLM. Block it. */
+    static bool chatActive = false;
+    if (chatActive) {
+        Serial.printf("[Agent] Blocked re-entrant chatWithLLM call\n");
+        return "[error: busy]";
+    }
+    chatActive = true;
+
     g_led_user = false; /* Reset - status LEDs allowed until a tool sets the LED */
     ledBlue(); /* Thinking... */
 
@@ -518,6 +530,7 @@ const char *chatWithLLM(const char *userMessage) {
         history[slot].used = true;
         historySave();
 
+        chatActive = false;
         return finalContent;
 
     } else if (ok) {
@@ -526,10 +539,12 @@ const char *chatWithLLM(const char *userMessage) {
         Serial.printf("\n[Agent] Tools executed, no text response.\n");
         Serial.printf("--- (%lums, %d+%d tokens) ---\n\n",
                       elapsed, totalPromptTokens, totalCompletionTokens);
+        chatActive = false;
         return "[Tools executed, no text response]";
     } else {
         ledRed();
         Serial.printf("\n[ERROR] LLM call failed: %s\n\n", llm.lastError());
+        chatActive = false;
         return nullptr;
     }
 }
@@ -559,6 +574,8 @@ static void onNatsEvent(nats_client_t *client, nats_event_t event,
     }
 }
 
+static void tgYield(); /* forward declaration */
+
 /**
  * NATS chat handler - request/reply. Caller sends a message,
  * we run the agentic loop and respond with the LLM answer.
@@ -577,6 +594,7 @@ static void onNatsChat(nats_client_t *client, const nats_msg_t *msg,
 
     Serial.printf("\n[NATS] chat: %s\n", chatBuf);
 
+    tgYield(); /* Free Telegram TLS so LLM can allocate */
     const char *response = chatWithLLM(chatBuf);
 
     /* Reply if caller expects a response */
@@ -843,6 +861,175 @@ static void onNatsCmd(nats_client_t *client, const nats_msg_t *msg,
 }
 
 /*============================================================================
+ * OpenClaw: Direct Tool Execution via NATS
+ *============================================================================*/
+
+/**
+ * NATS tool_exec handler - direct tool execution without LLM.
+ * Flat JSON protocol: {"tool":"led_set","r":255,"g":0,"b":0}
+ * The entire payload passes straight to toolExecute() since handlers
+ * use strstr-based parsing and ignore unknown keys like "tool".
+ */
+static void onNatsToolExec(nats_client_t *client, const nats_msg_t *msg,
+                           void *userdata) {
+    (void)userdata;
+    if (msg->data_len == 0) {
+        if (msg->reply_len > 0)
+            nats_msg_respond_str(client, msg,
+                "{\"ok\":false,\"error\":\"empty payload\"}");
+        return;
+    }
+
+    /* Copy payload into toolCallJsonBuf (idle — only used by chatWithLLM,
+     * which we never call from this callback). */
+    size_t len = msg->data_len < sizeof(toolCallJsonBuf) - 1
+                 ? msg->data_len : sizeof(toolCallJsonBuf) - 1;
+    memcpy(toolCallJsonBuf, msg->data, len);
+    toolCallJsonBuf[len] = '\0';
+
+    Serial.printf("\n[NATS] tool_exec: %s\n", toolCallJsonBuf);
+
+    /* Extract tool name */
+    static char toolName[32];
+    if (!jsonGetString(toolCallJsonBuf, "tool", toolName, sizeof(toolName))) {
+        Serial.printf("[NATS] tool_exec: missing 'tool' key\n");
+        if (msg->reply_len > 0)
+            nats_msg_respond_str(client, msg,
+                "{\"ok\":false,\"error\":\"missing 'tool' key\"}");
+        return;
+    }
+
+    /* Blocklist: remote_chat — re-entrant NATS processing */
+    if (strcmp(toolName, "remote_chat") == 0) {
+        Serial.printf("[NATS] tool_exec: blocked tool '%s'\n", toolName);
+        if (msg->reply_len > 0)
+            nats_msg_respond_str(client, msg,
+                "{\"ok\":false,\"error\":\"remote_chat not available via tool_exec\"}");
+        return;
+    }
+
+    /* Blocklist: file_write to /memory.txt — internal AI memory */
+    if (strcmp(toolName, "file_write") == 0) {
+        char pathBuf[64]; /* stack — only 64 bytes, brief use */
+        if (jsonGetString(toolCallJsonBuf, "path", pathBuf, sizeof(pathBuf))
+            && strcmp(pathBuf, "/memory.txt") == 0) {
+            Serial.printf("[NATS] tool_exec: blocked write to /memory.txt\n");
+            if (msg->reply_len > 0)
+                nats_msg_respond_str(client, msg,
+                    "{\"ok\":false,\"error\":\"cannot write to /memory.txt via tool_exec\"}");
+            return;
+        }
+    }
+
+    /* Execute tool — result into cmdResponseBuf (idle — only used by
+     * handleCommand, which we never call from this callback). */
+    bool found = toolExecute(toolName, toolCallJsonBuf,
+                             cmdResponseBuf, sizeof(cmdResponseBuf));
+
+    /* Determine success: unknown tool or "Error:" prefix */
+    bool ok = found && strncmp(cmdResponseBuf, "Error:", 6) != 0;
+
+    /* Build JSON reply — escape directly into reply buffer (no intermediate) */
+    static char reply[768];
+    int w;
+    if (ok) {
+        w = snprintf(reply, sizeof(reply), "{\"ok\":true,\"result\":\"");
+    } else {
+        w = snprintf(reply, sizeof(reply), "{\"ok\":false,\"error\":\"");
+    }
+    w += jsonEscape(reply + w, sizeof(reply) - w - 3, cmdResponseBuf);
+    snprintf(reply + w, sizeof(reply) - w, "\"}");
+
+    Serial.printf("[NATS] tool_exec -> %s\n> ", ok ? "ok" : "error");
+
+    if (msg->reply_len > 0) {
+        nats_msg_respond_str(client, msg, reply);
+    }
+
+    /* Publish brief event for observability */
+    if (g_nats_connected) {
+        static char evtBuf[128];
+        snprintf(evtBuf, sizeof(evtBuf),
+            "{\"event\":\"tool_exec\",\"tool\":\"%s\",\"ok\":%s}",
+            toolName, ok ? "true" : "false");
+        natsClient.publish(natsSubjectEvents, evtBuf);
+    }
+}
+
+/**
+ * NATS capabilities handler - returns device state as JSON.
+ * Used by OpenClaw for discovery: what tools/devices/rules are available.
+ */
+static void onNatsCapabilities(nats_client_t *client, const nats_msg_t *msg,
+                               void *userdata) {
+    (void)userdata;
+
+    /* Reuse toolCallJsonBuf[4096] — idle here (only used by chatWithLLM,
+     * which we never call from this callback). */
+    int w = 0;
+
+    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w,
+        "{\"device\":\"%s\",\"version\":\"%s\",\"free_heap\":%u,",
+        cfg_device_name, WIRECLAW_VERSION, ESP.getFreeHeap());
+
+    /* Tools list */
+    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w,
+        "\"tools\":[\"led_set\",\"gpio_write\",\"gpio_read\",\"device_info\","
+        "\"file_read\",\"file_write\",\"nats_publish\",\"temperature_read\","
+        "\"device_register\",\"device_list\",\"device_remove\",\"sensor_read\","
+        "\"actuator_set\",\"rule_create\",\"rule_list\",\"rule_delete\","
+        "\"rule_enable\",\"serial_send\",\"chain_create\"],");
+
+    /* Devices */
+    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w, "\"devices\":[");
+    const Device *devs = deviceGetAll();
+    bool firstDev = true;
+    for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(toolCallJsonBuf) - 200; i++) {
+        if (!devs[i].used) continue;
+        const Device *d = &devs[i];
+        if (!firstDev) toolCallJsonBuf[w++] = ',';
+        firstDev = false;
+        if (deviceIsSensor(d->kind)) {
+            float val = deviceReadSensor(d);
+            w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w,
+                "{\"name\":\"%s\",\"kind\":\"%s\",\"value\":%.1f,\"unit\":\"%s\"}",
+                d->name, deviceKindName(d->kind), val, d->unit);
+        } else {
+            w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w,
+                "{\"name\":\"%s\",\"kind\":\"%s\",\"pin\":%d}",
+                d->name, deviceKindName(d->kind), d->pin);
+        }
+    }
+    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w, "],");
+
+    /* Rules */
+    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w, "\"rules\":[");
+    const Rule *rules = ruleGetAll();
+    bool firstRule = true;
+    for (int i = 0; i < MAX_RULES && w < (int)sizeof(toolCallJsonBuf) - 200; i++) {
+        if (!rules[i].used) continue;
+        const Rule *r = &rules[i];
+        if (!firstRule) toolCallJsonBuf[w++] = ',';
+        firstRule = false;
+        w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w,
+            "{\"id\":\"%s\",\"name\":\"%s\",\"enabled\":%s,\"condition\":\"%s\","
+            "\"sensor\":\"%s\",\"fired\":%s}",
+            r->id, r->name,
+            r->enabled ? "true" : "false",
+            conditionOpName(r->condition),
+            r->sensor_name,
+            r->fired ? "true" : "false");
+    }
+    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w, "]}");
+
+    Serial.printf("[NATS] capabilities: %d bytes\n> ", w);
+
+    if (msg->reply_len > 0) {
+        nats_msg_respond_str(client, msg, toolCallJsonBuf);
+    }
+}
+
+/*============================================================================
  * NATS Virtual Sensor Subscriptions
  *============================================================================*/
 
@@ -905,6 +1092,10 @@ static void buildNatsSubjects() {
              "%s.cmd", cfg_device_name);
     snprintf(natsSubjectEvents, sizeof(natsSubjectEvents),
              "%s.events", cfg_device_name);
+    snprintf(natsSubjectToolExec, sizeof(natsSubjectToolExec),
+             "%s.tool_exec", cfg_device_name);
+    snprintf(natsSubjectCapabilities, sizeof(natsSubjectCapabilities),
+             "%s.capabilities", cfg_device_name);
 }
 
 /**
@@ -915,7 +1106,7 @@ static bool connectNats() {
 
     natsClient.onEvent(onNatsEvent, nullptr);
 
-    if (!natsClient.connect(cfg_nats_host, (uint16_t)cfg_nats_port, 5000)) {
+    if (!natsClient.connect(cfg_nats_host, (uint16_t)cfg_nats_port, 2000)) {
         Serial.printf("NATS: connection failed\n");
         return false;
     }
@@ -934,14 +1125,37 @@ static bool connectNats() {
                       natsSubjectCmd, nats_err_str(err));
     }
 
+    err = natsClient.subscribe(natsSubjectToolExec, onNatsToolExec, nullptr);
+    if (err != NATS_OK) {
+        Serial.printf("NATS: subscribe %s failed: %s\n",
+                      natsSubjectToolExec, nats_err_str(err));
+    }
+
+    err = natsClient.subscribe(natsSubjectCapabilities, onNatsCapabilities, nullptr);
+    if (err != NATS_OK) {
+        Serial.printf("NATS: subscribe %s failed: %s\n",
+                      natsSubjectCapabilities, nats_err_str(err));
+    }
+
+    err = natsClient.subscribe(natsSubjectDiscover, onNatsCapabilities, nullptr);
+    if (err != NATS_OK) {
+        Serial.printf("NATS: subscribe %s failed: %s\n",
+                      natsSubjectDiscover, nats_err_str(err));
+    }
+
     /* Publish online event */
-    static char onlineMsg[128];
+    static char onlineMsg[256];
     snprintf(onlineMsg, sizeof(onlineMsg),
-             "{\"event\":\"online\",\"device\":\"%s\",\"ip\":\"%s\"}",
-             cfg_device_name, WiFi.localIP().toString().c_str());
+             "{\"event\":\"online\",\"device\":\"%s\",\"version\":\"%s\","
+             "\"ip\":\"%s\",\"tool_exec\":\"%s\",\"capabilities\":\"%s\"}",
+             cfg_device_name, WIRECLAW_VERSION,
+             WiFi.localIP().toString().c_str(),
+             natsSubjectToolExec, natsSubjectCapabilities);
     natsClient.publish(natsSubjectEvents, onlineMsg);
 
-    Serial.printf("NATS: subscribed to %s, %s\n", natsSubjectChat, natsSubjectCmd);
+    Serial.printf("NATS: subscribed to %s, %s, %s, %s\n",
+                  natsSubjectChat, natsSubjectCmd,
+                  natsSubjectToolExec, natsSubjectCapabilities);
 
     /* Subscribe NATS virtual sensors */
     natsSubscribeDeviceSensors();
@@ -1304,6 +1518,15 @@ static void telegramTick() {
     }
 }
 
+/** Release Telegram TLS connection if active, so LLM can use the heap. */
+static void tgYield() {
+    if (tgState != TG_IDLE) {
+        tgClient.stop();
+        tgState = TG_IDLE;
+        tgLastPoll = millis();
+    }
+}
+
 /*============================================================================
  * Serial Commands
  *============================================================================*/
@@ -1359,6 +1582,7 @@ void handleSerialCommand(const char *input) {
     }
 
     /* Unknown command - treat as chat */
+    tgYield(); /* Free Telegram TLS so LLM can allocate */
     chatWithLLM(input);
     Serial.printf("> ");
 }
@@ -1560,6 +1784,7 @@ void loop() {
             if (input[0] == '/') {
                 handleSerialCommand(input);
             } else {
+                tgYield(); /* Free Telegram TLS so LLM can allocate */
                 chatWithLLM(input);
                 Serial.printf("> ");
             }
