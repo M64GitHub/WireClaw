@@ -444,8 +444,27 @@ The AI recalled "blue" from its persistent memory without being told again. It s
 If you wire up an NTC thermistor on pin 4 and a relay on pin 16:
 
 ```
+              NTC on GND side              NTC on 3.3V side
+              (default)                    (inverted=true)
+
+              3.3V ──┐                     3.3V ──┐
+                     │                            │
+                [10K fixed]                  [NTC 10K]
+                     │                            │
+              ADC ───┤                     ADC ───┤
+                     │                            │
+                 [NTC 10K]                   [10K fixed]
+                     │                            │
+              GND ──┘                      GND ──┘
+```
+
+```
 You:  "Register an NTC thermistor on pin 4 called 'temperature', unit is C"
 AI:   device_register(name="temperature", type="ntc_10k", pin=4, unit="C")
+      -> Registered sensor 'temperature' on pin 4
+
+      (If the NTC is on the 3.3V side of the voltage divider, add inverted=true)
+AI:   device_register(name="temperature", type="ntc_10k", pin=4, unit="C", inverted=true)
       -> Registered sensor 'temperature' on pin 4
 
 You:  "Register a relay on pin 16 called 'fan', it uses inverted logic"
@@ -701,8 +720,8 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 |------|------|-------------|
 | `digital_in` | Sensor | `digitalRead()` - 0 or 1 |
 | `analog_in` | Sensor | `analogRead()` - raw ADC value 0-4095 |
-| `ntc_10k` | Sensor | NTC thermistor - converts to Celsius (B=3950) |
-| `ldr` | Sensor | Light-dependent resistor - rough lux estimate |
+| `ntc_10k` | Sensor | NTC 10K thermistor (B=3950, 16-sample averaged + EMA α=0.3). Default: NTC between ADC and GND. Set `inverted=true` if NTC is on the 3.3V side |
+| `ldr` | Sensor | Light-dependent resistor - rough lux estimate (16-sample averaged, no EMA — instant response) |
 | `internal_temp` | Sensor | ESP32 chip temperature (no pin, virtual) |
 | `clock_hour` | Sensor | Current hour 0-23 via NTP (no pin, virtual) |
 | `clock_minute` | Sensor | Current minute 0-59 via NTP (no pin, virtual) |
@@ -1182,7 +1201,7 @@ nats req wireclaw-01.cmd "rules"
 
 ## OpenClaw Integration
 
-[OpenClaw](https://github.com/openclaw) is an open-source AI agent that controls your digital life — email, calendar, GitHub, shell. WireClaw controls the physical world — LEDs, relays, GPIO pins, sensors. This integration connects them over NATS: OpenClaw executes tools directly on WireClaw's hardware without involving WireClaw's own LLM. One LLM call, not two. Fast, cheap, no telephone game between models.
+[OpenClaw](https://github.com/openclaw) is an open-source AI agent that controls your digital life - email, calendar, GitHub, shell. WireClaw controls the physical world - LEDs, relays, GPIO pins, sensors. This integration connects them over NATS: OpenClaw executes tools directly on WireClaw's hardware without involving WireClaw's own LLM. One LLM call, not two. Fast, cheap, no telephone game between models.
 
 Cross-domain examples that neither agent can do alone:
 
@@ -1206,7 +1225,7 @@ $ nats req wireclaw-01.tool_exec '{"tool":"nonexistent"}'
 {"ok":false,"error":"unknown tool 'nonexistent'"}
 ```
 
-The key is `"tool"` (not `"name"`) to avoid collision with tools that have a `"name"` parameter like `device_register`. This works because WireClaw's internal tool handlers use `strstr`-based parsing — they find their keys anywhere in the JSON string, ignore the rest.
+The key is `"tool"` (not `"name"`) to avoid collision with tools that have a `"name"` parameter like `device_register`. This works because WireClaw's internal tool handlers use `strstr`-based parsing - they find their keys anywhere in the JSON string, ignore the rest.
 
 ### Discovery
 
@@ -1232,7 +1251,7 @@ Returns: device name, firmware version, free heap, registered sensors/actuators 
 
 ### Tool Execution
 
-All 19 tools are available via `tool_exec` (except `remote_chat` — see [Security](#security-1)):
+All 19 tools are available via `tool_exec` (except `remote_chat` - see [Security](#security-1)):
 
 ```bash
 # Set LED color
@@ -1248,7 +1267,7 @@ nats req wireclaw-01.tool_exec '{"tool":"rule_create","rule_name":"heat led","se
 nats req wireclaw-01.tool_exec '{"tool":"device_list"}'
 ```
 
-Rules created via `tool_exec` persist on the ESP32 and run 24/7 — even when OpenClaw, the NATS server, or WiFi is offline.
+Rules created via `tool_exec` persist on the ESP32 and run 24/7 - even when OpenClaw, the NATS server, or WiFi is offline.
 
 ### Cross-Domain Automation
 
@@ -1270,7 +1289,7 @@ nats req wireclaw-01.tool_exec '{"tool":"rule_create","rule_name":"temp alert","
 nats sub alerts.overheating
 ```
 
-**External data → WireClaw sensor.** The most powerful pattern — OpenClaw pushes data to a NATS subject, WireClaw has a `nats_value` sensor on it, and persistent rules handle the rest autonomously:
+**External data → WireClaw sensor.** The most powerful pattern - OpenClaw pushes data to a NATS subject, WireClaw has a `nats_value` sensor on it, and persistent rules handle the rest autonomously:
 
 ```bash
 # Step 1: Register a NATS virtual sensor on WireClaw
@@ -1284,7 +1303,7 @@ nats pub ci.build.status "0"   # fail → LED goes red
 nats pub ci.build.status "1"   # pass → LED goes green
 ```
 
-Once the sensor and rule are set up, WireClaw handles everything locally. OpenClaw just pushes data — no tool calls needed after initial setup.
+Once the sensor and rule are set up, WireClaw handles everything locally. OpenClaw just pushes data - no tool calls needed after initial setup.
 
 ### Setup
 
@@ -1332,8 +1351,8 @@ If you see the device respond with its capabilities, the full stack is connected
 
 The OpenClaw skill lives in `skill/wireclaw/` and contains everything OpenClaw needs:
 
-- **`SKILL.md`** — full reference: protocol, all 19 tools with parameters, constraints (one action per rule, edge-triggered behavior, clock sensors), cross-domain patterns, and worked examples. Derived from WireClaw's actual system prompt so OpenClaw generates correct tool calls on the first try.
-- **`scripts/wc.sh`** — convenience wrapper with 4 subcommands:
+- **`SKILL.md`** - full reference: protocol, all 19 tools with parameters, constraints (one action per rule, edge-triggered behavior, clock sensors), cross-domain patterns, and worked examples. Derived from WireClaw's actual system prompt so OpenClaw generates correct tool calls on the first try.
+- **`scripts/wc.sh`** - convenience wrapper with 4 subcommands:
 
 ```bash
 wc.sh exec <device> <tool> [json_params]  # Execute a tool
@@ -1350,10 +1369,10 @@ Two tools are blocked via `tool_exec`:
 
 | Blocked | Reason |
 |---------|--------|
-| `remote_chat` | Calls `natsClient.process()` in a polling loop — re-entrant NATS processing from within a callback would corrupt internal state. Use `nats req other-device.tool_exec` instead. |
+| `remote_chat` | Calls `natsClient.process()` in a polling loop - re-entrant NATS processing from within a callback would corrupt internal state. Use `nats req other-device.tool_exec` instead. |
 | `file_write` to `/memory.txt` | Internal AI memory, auto-injected into every conversation. External writes would corrupt the device's learned context. |
 
-No authentication in v1 — same as the existing NATS chat and cmd subjects. Anyone on the NATS network can call tools. If your network is untrusted, restrict access at the NATS server level (credentials, subject permissions).
+No authentication in v1 - same as the existing NATS chat and cmd subjects. Anyone on the NATS network can call tools. If your network is untrusted, restrict access at the NATS server level (credentials, subject permissions).
 
 ## Configuration
 

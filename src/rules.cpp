@@ -180,7 +180,7 @@ const char *ruleCreate(const char *name, const char *sensor_name, uint8_t sensor
     r->fired = false;
     r->last_eval = 0;
     r->last_triggered = 0;
-    r->last_reading = 0;
+    r->last_reading = 0.0f;
     r->enabled = true;
     r->used = true;
 
@@ -248,7 +248,7 @@ static void interpolateMessage(const char *tmpl, const Rule *r,
                 float val;
                 bool found = false;
                 if (strcmp(varname, "value") == 0) {
-                    val = (float)r->last_reading;
+                    val = r->last_reading;
                     found = true;
                 } else {
                     Device *dev = deviceFind(varname);
@@ -358,8 +358,8 @@ static void publishRuleEvent(const Rule *r, bool is_on) {
 
     static char eventBuf[192];
     snprintf(eventBuf, sizeof(eventBuf),
-        "{\"event\":\"rule\",\"rule\":\"%s\",\"state\":\"%s\",\"reading\":%d,\"threshold\":%d}",
-        r->name, is_on ? "on" : "off", (int)r->last_reading, (int)r->threshold);
+        "{\"event\":\"rule\",\"rule\":\"%s\",\"state\":\"%s\",\"reading\":%.1f,\"threshold\":%d}",
+        r->name, is_on ? "on" : "off", r->last_reading, (int)r->threshold);
     natsClient.publish(natsSubjectEvents, eventBuf);
 }
 
@@ -503,8 +503,8 @@ void rulesEvaluate() {
             }
         }
 
-        int32_t prev_reading = r->last_reading;
-        r->last_reading = (int32_t)reading;
+        float prev_reading = r->last_reading;
+        r->last_reading = reading;
 
         /* For text-bearing sensors, compute message hash for COND_CHANGE */
         uint32_t cur_msg_hash = 0;
@@ -526,10 +526,10 @@ void rulesEvaluate() {
         switch (r->condition) {
             case COND_GT:     condition_met = (reading > (float)r->threshold); break;
             case COND_LT:     condition_met = (reading < (float)r->threshold); break;
-            case COND_EQ:     condition_met = ((int32_t)reading == r->threshold); break;
-            case COND_NEQ:    condition_met = ((int32_t)reading != r->threshold); break;
+            case COND_EQ:     condition_met = (reading == (float)r->threshold); break;
+            case COND_NEQ:    condition_met = (reading != (float)r->threshold); break;
             case COND_CHANGE: {
-                bool val_changed = ((int32_t)reading != prev_reading);
+                bool val_changed = (reading != prev_reading);
                 bool msg_changed = (cur_msg_hash != 0 && cur_msg_hash != r->last_msg_hash);
                 condition_met = val_changed || msg_changed;
                 r->last_msg_hash = cur_msg_hash;
@@ -544,8 +544,8 @@ void rulesEvaluate() {
             r->last_triggered = now;
             publishRuleEvent(r, true);
             if (r->chain_id[0]) chainEnqueue(r->chain_id, r->chain_delay_ms);
-            if (g_debug) Serial.printf("[Rule] %s '%s' PERIODIC (reading=%d)\n",
-                                       r->id, r->name, (int)r->last_reading);
+            if (g_debug) Serial.printf("[Rule] %s '%s' PERIODIC (reading=%.1f)\n",
+                                       r->id, r->name, r->last_reading);
         }
         /* Edge-triggered: fire on transition */
         else if (condition_met && !r->fired) {
@@ -554,8 +554,8 @@ void rulesEvaluate() {
             executeAction(r, true);
             publishRuleEvent(r, true);
             if (r->chain_id[0]) chainEnqueue(r->chain_id, r->chain_delay_ms);
-            Serial.printf("[Rule] %s '%s' TRIGGERED (reading=%d, threshold=%d)\n",
-                          r->id, r->name, (int)r->last_reading, (int)r->threshold);
+            Serial.printf("[Rule] %s '%s' TRIGGERED (reading=%.1f, threshold=%d)\n",
+                          r->id, r->name, r->last_reading, (int)r->threshold);
         } else if (!condition_met && r->fired) {
             r->fired = false;
             r->last_triggered = now;
@@ -564,8 +564,8 @@ void rulesEvaluate() {
             }
             publishRuleEvent(r, false);
             if (r->chain_off_id[0]) chainEnqueue(r->chain_off_id, r->chain_off_delay_ms);
-            Serial.printf("[Rule] %s '%s' CLEARED (reading=%d)\n",
-                          r->id, r->name, (int)r->last_reading);
+            Serial.printf("[Rule] %s '%s' CLEARED (reading=%.1f)\n",
+                          r->id, r->name, r->last_reading);
         }
     }
 
@@ -750,7 +750,7 @@ static void rulesLoad() {
         r->last_triggered = (uint32_t)ruleJsonGetInt(objBuf, "lt", 0);
         r->fired = false;
         r->last_eval = 0;
-        r->last_reading = 0;
+        r->last_reading = 0.0f;
         r->used = true;
 
         /* Track highest counter for auto-increment */

@@ -665,10 +665,10 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
     }
     if (strcmp(cmd, "devices") == 0) {
         int w = 0;
-        const Device *devs = deviceGetAll();
+        Device *devs = deviceGetAll();
         for (int i = 0; i < MAX_DEVICES && w < buf_len - 80; i++) {
             if (!devs[i].used) continue;
-            const Device *d = &devs[i];
+            Device *d = &devs[i];
             if (w > 0) w += snprintf(buf + w, buf_len - w, "\n");
             if (d->kind == DEV_SENSOR_SERIAL_TEXT) {
                 float val = deviceReadSensor(d);
@@ -703,16 +703,18 @@ static bool handleCommand(const char *cmd, char *buf, int buf_len) {
             const Rule *r = &rules[i];
             if (w > 0) w += snprintf(buf + w, buf_len - w, "\n");
             /* Header: id 'name' [ON] sensor cond threshold val=X state */
+            uint32_t eval_ago = r->last_eval ? (millis() - r->last_eval) / 1000 : 0;
             w += snprintf(buf + w, buf_len - w,
-                "%s '%s' [%s] %s %s %d val=%d %s",
+                "%s '%s' [%s] %s %s %d val=%.1f %s eval=%us every=%us",
                 r->id, r->name,
                 r->enabled ? "ON" : "OFF",
                 r->sensor_name[0] ? r->sensor_name :
                     (r->condition == COND_CHAINED ? "" : "gpio"),
                 conditionOpName(r->condition),
                 (int)r->threshold,
-                (int)r->last_reading,
-                r->fired ? "FIRED" : "idle");
+                r->last_reading,
+                r->fired ? "FIRED" : "idle",
+                (unsigned)eval_ago, (unsigned)(r->interval_ms / 1000));
             /* ON action */
             w += snprintf(buf + w, buf_len - w, "\n  on: %s",
                           actionTypeName(r->on_action));
@@ -982,11 +984,11 @@ static void onNatsCapabilities(nats_client_t *client, const nats_msg_t *msg,
 
     /* Devices */
     w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w, "\"devices\":[");
-    const Device *devs = deviceGetAll();
+    Device *devs = deviceGetAll();
     bool firstDev = true;
     for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(toolCallJsonBuf) - 200; i++) {
         if (!devs[i].used) continue;
-        const Device *d = &devs[i];
+        Device *d = &devs[i];
         if (!firstDev) toolCallJsonBuf[w++] = ',';
         firstDev = false;
         if (deviceIsSensor(d->kind)) {

@@ -1,4 +1,4 @@
-# WireClaw — OpenClaw Skill
+# WireClaw - OpenClaw Skill
 
 Control physical hardware from OpenClaw. WireClaw runs on ESP32 microcontrollers
 and executes tool calls directly on LEDs, GPIO pins, relays, and sensors via NATS.
@@ -48,5 +48,5 @@ See `SKILL.md` for the full tool reference and automation patterns.
 
 ## Links
 
-- [WireClaw](https://wireclaw.io) — Project homepage
-- [WireClaw GitHub](https://github.com/M64GitHub/WireClaw) — Source code
+- [WireClaw](https://wireclaw.io) - Project homepage
+- [WireClaw GitHub](https://github.com/M64GitHub/WireClaw) - Source code

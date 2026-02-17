@@ -83,7 +83,7 @@ Multi-device:
 - Use remote_chat(device="name", message="...") to talk to other WireClaw devices on the same NATS network.
 - Each device has its own tools and controls its own hardware.
 
-Device types: digital_in, analog_in, ntc_10k, ldr, nats_value, serial_text, clock_hour, clock_minute, clock_hhmm, digital_out, relay (inverted logic), pwm.
+Device types: digital_in, analog_in, ntc_10k (set inverted=true if NTC wired on 3.3V side), ldr, nats_value, serial_text, clock_hour, clock_minute, clock_hhmm, digital_out, relay (inverted logic), pwm.
 Rule conditions: gt (>), lt (<), eq (==), neq (!=), change, always, chained (chain-only target).
 Rule actions: gpio_write, led_set, nats_publish, actuator, telegram, serial_send.
 

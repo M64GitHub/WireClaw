@@ -67,7 +67,7 @@ static DeviceKind kindFromString(const char *s) {
  * CRUD
  *============================================================================*/
 
-const Device *deviceGetAll() {
+Device *deviceGetAll() {
     return g_devices;
 }
 
@@ -148,29 +148,49 @@ bool deviceRemove(const char *name) {
  * Sensor Reading
  *============================================================================*/
 
-float deviceReadSensor(const Device *dev) {
+float deviceReadSensor(Device *dev) {
     if (!dev || !dev->used) return 0.0f;
+
+    float result = 0.0f;
+    bool record_history = false;
 
     switch (dev->kind) {
         case DEV_SENSOR_DIGITAL:
             pinMode(dev->pin, INPUT);
-            return (float)digitalRead(dev->pin);
+            result = (float)digitalRead(dev->pin);
+            break;
 
         case DEV_SENSOR_ANALOG_RAW:
-            return (float)analogRead(dev->pin);
+            result = (float)analogRead(dev->pin);
+            record_history = true;
+            break;
 
         case DEV_SENSOR_NTC_10K: {
-            int raw = analogRead(dev->pin);
+            int32_t sum = 0;
+            for (int s = 0; s < 16; s++) sum += analogRead(dev->pin);
+            int raw = sum / 16;
             if (raw <= 0 || raw >= 4095) return -999.0f;
-            float resistance = 10000.0f * raw / (4095.0f - raw);
+            float resistance;
+            if (dev->inverted)
+                resistance = 10000.0f * (4095.0f - raw) / (float)raw;   /* NTC on top (3.3V side) */
+            else
+                resistance = 10000.0f * raw / (4095.0f - raw);          /* NTC on bottom (GND side) */
             float tempK = 1.0f / (1.0f / 298.15f + (1.0f / 3950.0f) * logf(resistance / 10000.0f));
-            return tempK - 273.15f;
+            float raw_val = tempK - 273.15f;
+            if (!dev->ema_init) { dev->ema = raw_val; dev->ema_init = true; }
+            else                { dev->ema = 0.3f * raw_val + 0.7f * dev->ema; }
+            result = dev->ema;
+            record_history = true;
+            break;
         }
 
         case DEV_SENSOR_LDR: {
-            int raw = analogRead(dev->pin);
-            /* Rough lux estimate: higher ADC = more light */
-            return (float)raw * 100.0f / 4095.0f;
+            int32_t sum = 0;
+            for (int s = 0; s < 16; s++) sum += analogRead(dev->pin);
+            int raw = sum / 16;
+            result = (float)raw * 100.0f / 4095.0f;
+            record_history = true;
+            break;
         }
 
         case DEV_SENSOR_INTERNAL_TEMP: {
@@ -179,39 +199,50 @@ float deviceReadSensor(const Device *dev) {
             if (g_temp_sensor)
                 temperature_sensor_get_celsius(g_temp_sensor, &t);
 #endif
-            return t;
+            result = t;
+            record_history = true;
+            break;
         }
 
         case DEV_SENSOR_CLOCK_HOUR: {
             struct tm timeinfo;
-            if (getLocalTime(&timeinfo, 0))
-                return (float)timeinfo.tm_hour;
-            return -1.0f;
+            result = getLocalTime(&timeinfo, 0) ? (float)timeinfo.tm_hour : -1.0f;
+            break;
         }
 
         case DEV_SENSOR_CLOCK_MINUTE: {
             struct tm timeinfo;
-            if (getLocalTime(&timeinfo, 0))
-                return (float)timeinfo.tm_min;
-            return -1.0f;
+            result = getLocalTime(&timeinfo, 0) ? (float)timeinfo.tm_min : -1.0f;
+            break;
         }
 
         case DEV_SENSOR_CLOCK_HHMM: {
             struct tm timeinfo;
-            if (getLocalTime(&timeinfo, 0))
-                return (float)(timeinfo.tm_hour * 100 + timeinfo.tm_min);
-            return -1.0f;
+            result = getLocalTime(&timeinfo, 0) ? (float)(timeinfo.tm_hour * 100 + timeinfo.tm_min) : -1.0f;
+            break;
         }
 
         case DEV_SENSOR_NATS_VALUE:
-            return dev->nats_value;
+            result = dev->nats_value;
+            record_history = true;
+            break;
 
         case DEV_SENSOR_SERIAL_TEXT:
-            return serialTextGetValue();
+            result = serialTextGetValue();
+            record_history = true;
+            break;
 
         default:
-            return 0.0f;
+            break;
     }
+
+    if (record_history) {
+        dev->history[dev->history_idx] = result;
+        dev->history_idx = (dev->history_idx + 1) % DEV_HISTORY_LEN;
+        if (!dev->history_full && dev->history_idx == 0) dev->history_full = true;
+    }
+
+    return result;
 }
 
 /*============================================================================

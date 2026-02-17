@@ -67,7 +67,7 @@ struct Rule {
 
     /* State */
     bool fired;                         /* runtime only */
-    int32_t last_reading;               /* runtime only */
+    float last_reading;                 /* runtime only */
     uint32_t last_msg_hash;             /* runtime only, for text-aware COND_CHANGE */
     bool enabled;
     bool used;

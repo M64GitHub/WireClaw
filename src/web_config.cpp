@@ -391,13 +391,16 @@ static void handleGetRules() {
         jsonEscapeBuf(e_src, sizeof(e_src), src);
         jsonEscapeBuf(e_chain, sizeof(e_chain), chain);
 
+        uint32_t eval_ago = r->last_eval ? (millis() - r->last_eval) / 1000 : 0;
         w += snprintf(buf + w, sizeof(buf) - w,
             "{\"id\":\"%s\",\"name\":\"%s\",\"en\":%s,"
             "\"src\":\"%s\",\"on\":\"%s\",\"off\":\"%s\","
-            "\"chain\":\"%s\",\"val\":%d,\"fired\":%s}",
+            "\"chain\":\"%s\",\"val\":%.1f,\"fired\":%s,"
+            "\"eval\":%u,\"every\":%u}",
             r->id, e_name, r->enabled ? "true" : "false",
             e_src, e_on, e_off, e_chain,
-            (int)r->last_reading, r->fired ? "true" : "false");
+            r->last_reading, r->fired ? "true" : "false",
+            (unsigned)eval_ago, (unsigned)(r->interval_ms / 1000));
     }
 
     w += snprintf(buf + w, sizeof(buf) - w, "]");
@@ -435,13 +438,13 @@ static void handleGetDevices() {
     static char buf[2048];
     int w = 0;
 
-    const Device *devs = deviceGetAll();
+    Device *devs = deviceGetAll();
     w += snprintf(buf + w, sizeof(buf) - w, "[");
 
     bool first = true;
     for (int i = 0; i < MAX_DEVICES && w < (int)sizeof(buf) - 256; i++) {
         if (!devs[i].used) continue;
-        const Device *d = &devs[i];
+        Device *d = &devs[i];
 
         if (!first) w += snprintf(buf + w, sizeof(buf) - w, ",");
         first = false;
@@ -492,10 +495,25 @@ static void handleGetDevices() {
 
         w += snprintf(buf + w, sizeof(buf) - w,
             "{\"name\":\"%s\",\"kind\":\"%s\",\"pin\":\"%s\","
-            "\"value\":\"%s\",\"extra\":\"%s\",\"msg\":\"%s\",\"internal\":%s}",
+            "\"value\":\"%s\",\"extra\":\"%s\",\"msg\":\"%s\",\"internal\":%s",
             e_name, deviceKindName(d->kind), pin_str,
             val_str, e_extra, e_msg,
             isInternalDevice(d->kind) ? "true" : "false");
+
+        /* Append history array for sensors with recorded readings */
+        int hcount = d->history_full ? DEV_HISTORY_LEN : d->history_idx;
+        if (hcount > 0) {
+            w += snprintf(buf + w, sizeof(buf) - w, ",\"hist\":[");
+            int hstart = d->history_full ? d->history_idx : 0;
+            for (int h = 0; h < hcount; h++) {
+                if (h > 0) buf[w++] = ',';
+                int idx = (hstart + h) % DEV_HISTORY_LEN;
+                w += snprintf(buf + w, sizeof(buf) - w, "%.1f", d->history[idx]);
+            }
+            w += snprintf(buf + w, sizeof(buf) - w, "]");
+        }
+
+        buf[w++] = '}';
     }
 
     w += snprintf(buf + w, sizeof(buf) - w, "]");
@@ -608,6 +626,8 @@ padding:0.1rem 0.4rem;border-radius:4px;line-height:1;transition:all 0.15s}
 .rule-act .arrow{color:var(--accent)}
 .rule-act.off-act .arrow{color:var(--red)}
 .rule-act.chain-act{color:var(--text3);font-style:italic}
+.spark{display:flex;align-items:flex-end;gap:2px;height:20px;margin-top:4px}
+.spark-bar{width:6px;background:var(--accent);border-radius:1px;min-height:2px}
 .rules-empty{text-align:center;color:var(--text3);padding:2rem 0;font-size:0.9rem}
 @media(max-width:480px){
 .wrap{padding:0.75rem}
@@ -808,6 +828,7 @@ h+='<span class="badge on">'+(d.pin==='virtual'?'virtual':'pin '+d.pin)+'</span>
 if(!d.internal)h+='<button class="del" onclick="deleteDevice(\''+d.name+'\')">&times;</button>';
 h+='</div>';
 h+='<div class="rule-meta">value: '+d.value+'</div>';
+if(d.hist&&d.hist.length>1){var mn=Math.min.apply(null,d.hist),mx=Math.max.apply(null,d.hist),rng=mx-mn||1,bars='';d.hist.forEach(function(v){var pct=Math.round(((v-mn)/rng)*100);bars+='<span class="spark-bar" style="height:'+Math.max(pct,5)+'%"></span>'});h+='<div class="spark">'+bars+'</div>'}
 if(d.extra)h+='<div class="rule-act"><span class="arrow">&rarr;</span> '+d.extra+'</div>';
 if(d.msg)h+='<div class="rule-act"><span class="arrow">&rarr;</span> "'+d.msg+'"</div>';
 h+='</div>'});
@@ -831,7 +852,7 @@ h+='<div class="rule"><div class="rule-hdr"><span class="rule-id">'+r.id+'</span
 h+='<span class="rule-name">'+r.name+'</span>';
 h+='<span class="badge '+(r.en?'on':'off')+'">'+(r.en?'ON':'OFF')+'</span>';
 h+='<button class="del" onclick="deleteRule(\''+r.id+'\')">&times;</button></div>';
-h+='<div class="rule-meta">'+r.src+'&ensp;val='+r.val+'&ensp;'+(r.fired?'FIRED':'idle')+'</div>';
+h+='<div class="rule-meta">'+r.src+'&ensp;val='+r.val+'&ensp;'+(r.fired?'FIRED':'idle')+'&ensp;eval='+r.eval+'s&ensp;every='+r.every+'s</div>';
 h+='<div class="rule-act"><span class="arrow">&rarr;</span> '+r.on+'</div>';
 if(r.off)h+='<div class="rule-act off-act"><span class="arrow">&larr;</span> '+r.off+'</div>';
 if(r.chain)h+='<div class="rule-act chain-act">chain: '+r.chain+'</div>';

@@ -97,7 +97,7 @@ static const char *TOOLS_JSON = R"JSON([
 {"type":"function","function":{"name":"file_write","description":"Write file to filesystem","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},
 {"type":"function","function":{"name":"nats_publish","description":"Publish NATS message","parameters":{"type":"object","properties":{"subject":{"type":"string"},"payload":{"type":"string"}},"required":["subject","payload"]}}},
 {"type":"function","function":{"name":"temperature_read","description":"Read chip temperature (C)","parameters":{"type":"object","properties":{}}}},
-{"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","enum":["digital_in","analog_in","ntc_10k","ldr","nats_value","serial_text","digital_out","relay","pwm"],"description":"digital_in: GPIO digital read, analog_in: raw ADC reading, ntc_10k: NTC 10K thermistor (temp in C), ldr: light-dependent resistor (light level), nats_value: virtual sensor from NATS subject, serial_text: UART text input, digital_out: GPIO digital write, relay: relay on/off, pwm: PWM output"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value)"},"baud":{"type":"integer","description":"Baud rate for serial_text (default 9600)"}},"required":["name","type"]}}},
+{"type":"function","function":{"name":"device_register","description":"Register sensor/actuator","parameters":{"type":"object","properties":{"name":{"type":"string"},"type":{"type":"string","enum":["digital_in","analog_in","ntc_10k","ldr","nats_value","serial_text","digital_out","relay","pwm"],"description":"digital_in: GPIO digital read, analog_in: raw ADC reading, ntc_10k: NTC 10K thermistor (temp in C, set inverted=true if NTC is on the 3.3V side), ldr: light-dependent resistor (light level), nats_value: virtual sensor from NATS subject, serial_text: UART text input, digital_out: GPIO digital write, relay: relay on/off, pwm: PWM output"},"pin":{"type":"integer"},"unit":{"type":"string"},"inverted":{"type":"boolean"},"subject":{"type":"string","description":"NATS subject (for nats_value)"},"baud":{"type":"integer","description":"Baud rate for serial_text (default 9600)"}},"required":["name","type"]}}},
 {"type":"function","function":{"name":"device_list","description":"List registered devices","parameters":{"type":"object","properties":{}}}},
 {"type":"function","function":{"name":"device_remove","description":"Remove device by name","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
 {"type":"function","function":{"name":"sensor_read","description":"Read named sensor value","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}},
@@ -316,7 +316,7 @@ static void tool_device_register(const char *args, char *result, int result_len)
         pin = PIN_NONE;
     } else if (kind == DEV_SENSOR_SERIAL_TEXT) {
         /* Only one serial_text device allowed */
-        const Device *devs = deviceGetAll();
+        Device *devs = deviceGetAll();
         for (int i = 0; i < MAX_DEVICES; i++) {
             if (devs[i].used && devs[i].kind == DEV_SENSOR_SERIAL_TEXT) {
                 snprintf(result, result_len, "Error: only one serial_text device allowed (already: '%s')",
@@ -356,13 +356,13 @@ static void tool_device_register(const char *args, char *result, int result_len)
 
 static void tool_device_list(const char *args, char *result, int result_len) {
     (void)args;
-    const Device *devs = deviceGetAll();
+    Device *devs = deviceGetAll();
     int w = 0;
     int count = 0;
 
     for (int i = 0; i < MAX_DEVICES && w < result_len - 40; i++) {
         if (!devs[i].used) continue;
-        const Device *d = &devs[i];
+        Device *d = &devs[i];
 
         if (count > 0) w += snprintf(result + w, result_len - w, "; ");
 
@@ -759,16 +759,18 @@ static void tool_rule_list(const char *args, char *result, int result_len) {
                 r->fired ? "FIRED" : "idle",
                 (unsigned)ago);
         } else {
+            uint32_t eval_ago = r->last_eval ? (millis() - r->last_eval) / 1000 : 0;
             w += snprintf(result + w, result_len - w,
-                "%s '%s' %s %s%s %d val=%d %s last=%us",
+                "%s '%s' %s %s%s %d val=%.1f %s last=%us eval=%us every=%us",
                 r->id, r->name,
                 r->enabled ? "ON" : "OFF",
                 r->sensor_name[0] ? r->sensor_name : "pin",
                 r->sensor_name[0] ? "" : "",
                 (int)r->threshold,
-                (int)r->last_reading,
+                r->last_reading,
                 r->fired ? "FIRED" : "idle",
-                (unsigned)ago);
+                (unsigned)ago,
+                (unsigned)eval_ago, (unsigned)(r->interval_ms / 1000));
         }
         if (r->chain_id[0]) {
             w += snprintf(result + w, result_len - w, " ->%s(%us)",

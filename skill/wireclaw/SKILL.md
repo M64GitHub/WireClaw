@@ -17,7 +17,7 @@ metadata:
       - WIRECLAW_NATS_URL
 ---
 
-# WireClaw — Physical World Automation for OpenClaw
+# WireClaw - Physical World Automation for OpenClaw
 
 WireClaw is an AI agent running on ESP32 microcontrollers ($5 chips) that
 controls real hardware: LEDs, GPIO pins, relays, sensors. It connects via NATS.
@@ -29,9 +29,9 @@ when OpenClaw, the NATS server, or WiFi is offline.
 ## How to Talk to WireClaw
 
 All communication uses `nats req` (request/reply). Never use `nats pub` for
-tool execution — you need the response to confirm success.
+tool execution - you need the response to confirm success.
 
-**Flat JSON protocol** — the `"tool"` field names the tool, all other fields
+**Flat JSON protocol** - the `"tool"` field names the tool, all other fields
 are the tool's parameters at the same level:
 
 ```bash
@@ -50,7 +50,7 @@ with tools that have a `"name"` parameter (like `device_register`).
 A convenience wrapper is available at `scripts/wc.sh`:
 
 ```bash
-# Tool execution — merges "tool" key automatically
+# Tool execution - merges "tool" key automatically
 scripts/wc.sh exec <device> <tool_name> '{"param":"value"}'
 
 # Query device capabilities
@@ -63,7 +63,7 @@ scripts/wc.sh discover
 scripts/wc.sh sub <device>
 ```
 
-You can use either the wrapper or raw `nats req` commands — both work identically.
+You can use either the wrapper or raw `nats req` commands - both work identically.
 
 ## Discovery
 
@@ -80,7 +80,7 @@ scripts/wc.sh caps wireclaw-01
 Returns: device name, version, IP, registered sensors/actuators with current
 values, active rules with status, and available tool names.
 
-## Critical Rules — Read Before Generating Tool Calls
+## Critical Rules - Read Before Generating Tool Calls
 
 ### Direct action vs. automation
 - For direct requests ("set LED pink", "turn on pin 4"), use the direct tool:
@@ -113,33 +113,33 @@ condition transitions from false->true (on_action) and once when true->false
 
 ### The LED is NOT a registered actuator
 The onboard RGB LED is controlled via `led_set` tool or `on_action="led_set"`
-in rules. Do NOT use `actuator_name` for the LED — that field is for registered
+in rules. Do NOT use `actuator_name` for the LED - that field is for registered
 actuator devices like relays or motors.
 
 ## Available Tools
 
-### Hardware — Direct Control
-- `led_set` — Set onboard RGB LED: `{"tool":"led_set","r":0-255,"g":0-255,"b":0-255}`
+### Hardware - Direct Control
+- `led_set` - Set onboard RGB LED: `{"tool":"led_set","r":0-255,"g":0-255,"b":0-255}`
   - r=0, g=0, b=0 turns LED off
-- `gpio_write` — Set GPIO pin: `{"tool":"gpio_write","pin":N,"value":0|1}`
-- `gpio_read` — Read GPIO pin: `{"tool":"gpio_read","pin":N}` -> HIGH/LOW
-- `temperature_read` — Read chip temperature (no params) -> degrees C
+- `gpio_write` - Set GPIO pin: `{"tool":"gpio_write","pin":N,"value":0|1}`
+- `gpio_read` - Read GPIO pin: `{"tool":"gpio_read","pin":N}` -> HIGH/LOW
+- `temperature_read` - Read chip temperature (no params) -> degrees C
 
 ### Sensors & Actuators
-- `device_register` — Register hardware:
+- `device_register` - Register hardware:
   `{"tool":"device_register","name":"fan","type":"relay","pin":16}`
-  Types: `digital_in`, `analog_in`, `ntc_10k`, `ldr`, `nats_value`,
+  Types: `digital_in`, `analog_in`, `ntc_10k` (inverted=true if NTC on 3.3V side), `ldr`, `nats_value`,
   `serial_text`, `digital_out`, `relay` (inverted logic), `pwm`
-- `device_list` — List all registered devices with current readings
-- `device_remove` — Remove by name: `{"tool":"device_remove","name":"fan"}`
-- `sensor_read` — Read a sensor: `{"tool":"sensor_read","name":"chip_temp"}` -> value + unit
-- `actuator_set` — Set an actuator: `{"tool":"actuator_set","name":"fan","value":1}`
+- `device_list` - List all registered devices with current readings
+- `device_remove` - Remove by name: `{"tool":"device_remove","name":"fan"}`
+- `sensor_read` - Read a sensor: `{"tool":"sensor_read","name":"chip_temp"}` -> value + unit
+- `actuator_set` - Set an actuator: `{"tool":"actuator_set","name":"fan","value":1}`
 
 ### Pre-registered Sensors (always available, no registration needed)
-- `chip_temp` — Internal chip temperature in degrees C
-- `clock_hour` — Current hour 0-23
-- `clock_minute` — Current minute 0-59
-- `clock_hhmm` — Time as hour x 100 + minute (e.g. 810=08:10, 1830=18:30)
+- `chip_temp` - Internal chip temperature in degrees C
+- `clock_hour` - Current hour 0-23
+- `clock_minute` - Current minute 0-59
+- `clock_hhmm` - Time as hour x 100 + minute (e.g. 810=08:10, 1830=18:30)
 
 ### NATS Virtual Sensors
 Register a sensor that receives values from any NATS subject:
@@ -157,7 +157,7 @@ This is powerful for OpenClaw integration: publish to a NATS subject from
 OpenClaw, and WireClaw reacts to it with persistent rules.
 
 ### Serial Text UART
-- `{"tool":"device_register","name":"x","type":"serial_text","baud":9600}` — attach serial device on UART1
+- `{"tool":"device_register","name":"x","type":"serial_text","baud":9600}` - attach serial device on UART1
 - Only ONE serial_text device allowed. Fixed pins per chip: C6/C3=RX4/TX5, S3=RX19/TX20.
 - Stores last received text line. Numbers parsed as float for rule conditions.
 - IMPORTANT: `{name}` gives NUMERIC value (0 if text). `{name:msg}` gives actual TEXT.
@@ -167,7 +167,7 @@ OpenClaw, and WireClaw reacts to it with persistent rules.
 
 ### Automation Rules
 
-**rule_create** — Create a persistent rule that runs 24/7 on the ESP32:
+**rule_create** - Create a persistent rule that runs 24/7 on the ESP32:
 ```bash
 scripts/wc.sh exec wireclaw-01 rule_create '{"rule_name":"heat alert","sensor_name":"chip_temp","condition":"gt","threshold":35,"on_action":"led_set","on_r":255,"on_g":0,"on_b":0,"off_action":"led_set","off_r":0,"off_g":255,"off_b":0}'
 ```
@@ -175,18 +175,18 @@ scripts/wc.sh exec wireclaw-01 rule_create '{"rule_name":"heat alert","sensor_na
 **Conditions:** `gt` (>), `lt` (<), `eq` (==), `neq` (!=), `change`, `always`
 
 **Actions** (one type per rule):
-- `led_set` — on_r, on_g, on_b / off_r, off_g, off_b (0-255)
-- `gpio_write` — on_pin, on_value / off_pin, off_value
-- `telegram` — on_telegram_message / off_telegram_message
-- `nats_publish` — on_nats_subject, on_nats_payload / off variants
-- `actuator` — actuator_name (registered device name, NOT "led")
-- `serial_send` — on_serial_text / off_serial_text
+- `led_set` - on_r, on_g, on_b / off_r, off_g, off_b (0-255)
+- `gpio_write` - on_pin, on_value / off_pin, off_value
+- `telegram` - on_telegram_message / off_telegram_message
+- `nats_publish` - on_nats_subject, on_nats_payload / off variants
+- `actuator` - actuator_name (registered device name, NOT "led")
+- `serial_send` - on_serial_text / off_serial_text
 
 **Template variables in messages:**
-- `{value}` — the triggering sensor's current reading
-- `{device_name}` — reads ANY named sensor's value at fire time
+- `{value}` - the triggering sensor's current reading
+- `{device_name}` - reads ANY named sensor's value at fire time
   (e.g. `{chip_temp}` in a message on a different sensor's rule)
-- `{name:msg}` — the message field from nats_value/serial_text payloads
+- `{name:msg}` - the message field from nats_value/serial_text payloads
 
 **Periodic rules:**
 Use `condition="always"` with `interval_seconds=N` for repeating tasks.
@@ -203,11 +203,11 @@ scripts/wc.sh exec wireclaw-01 rule_create '{"rule_name":"temp publish","sensor_
 - For "do X at time Y", use ONE rule with on_action + off_action.
   The off_action auto-fires when the minute passes (edge-triggered).
 
-**rule_list** — List all rules with status. Always call this before deleting.
+**rule_list** - List all rules with status. Always call this before deleting.
 
-**rule_delete** — Delete by ID: `{"tool":"rule_delete","rule_id":"rule_01"}` or `{"tool":"rule_delete","rule_id":"all"}` to wipe all.
+**rule_delete** - Delete by ID: `{"tool":"rule_delete","rule_id":"rule_01"}` or `{"tool":"rule_delete","rule_id":"all"}` to wipe all.
 
-**rule_enable** — Enable/disable without deleting: `{"tool":"rule_enable","rule_id":"rule_01","enabled":false}`
+**rule_enable** - Enable/disable without deleting: `{"tool":"rule_enable","rule_id":"rule_01","enabled":false}`
 
 ### Chain Automation (multi-step sequences)
 For 2-5 step automations, use `chain_create`. One tool call creates the full chain.
@@ -219,12 +219,12 @@ scripts/wc.sh exec wireclaw-01 chain_create '{"sensor_name":"chip_temp","conditi
 - For simple single-action rules, use rule_create instead.
 
 ### System & Communication
-- `device_info` — Heap, uptime, WiFi, chip info
-- `file_read` — Read file from ESP32 filesystem: `{"tool":"file_read","path":"/memory.txt"}`
-- `file_write` — Write file: `{"tool":"file_write","path":"/memory.txt","content":"..."}`
-- `nats_publish` — Publish NATS message: `{"tool":"nats_publish","subject":"...","payload":"..."}`
-- `serial_send` — Send text over UART: `{"tool":"serial_send","text":"GET_TEMP"}`
-- `remote_chat` — Chat with another WireClaw via its LLM:
+- `device_info` - Heap, uptime, WiFi, chip info
+- `file_read` - Read file from ESP32 filesystem: `{"tool":"file_read","path":"/memory.txt"}`
+- `file_write` - Write file: `{"tool":"file_write","path":"/memory.txt","content":"..."}`
+- `nats_publish` - Publish NATS message: `{"tool":"nats_publish","subject":"...","payload":"..."}`
+- `serial_send` - Send text over UART: `{"tool":"serial_send","text":"GET_TEMP"}`
+- `remote_chat` - Chat with another WireClaw via its LLM:
   `{"tool":"remote_chat","device":"garden-node","message":"what is your temperature?"}`
   (This invokes the other device's LLM. For direct tool calls on another
   device, use `nats req other-device.tool_exec` instead.)
@@ -269,7 +269,7 @@ for one-off actions. For anything ongoing, create a rule.
 scripts/wc.sh exec wireclaw-01 led_set '{"r":0,"g":0,"b":255}'
 ```
 
-**Temperature alert with Telegram + LED (needs TWO rules — one action type each):**
+**Temperature alert with Telegram + LED (needs TWO rules - one action type each):**
 ```bash
 scripts/wc.sh exec wireclaw-01 rule_create '{"rule_name":"heat telegram","sensor_name":"chip_temp","condition":"gt","threshold":30,"on_action":"telegram","on_telegram_message":"Office is {value}C!","off_action":"telegram","off_telegram_message":"Office cooled to {value}C"}'
 

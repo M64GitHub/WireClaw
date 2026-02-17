@@ -50,6 +50,14 @@ struct Device {
     uint32_t    baud;
     /* Last value set on actuator (for display; not persisted, resets on boot) */
     int         last_value;
+    /* EMA-smoothed sensor value (runtime only, not persisted) */
+    float       ema;
+    bool        ema_init;
+    /* Recent readings for sparkline (runtime only, not persisted) */
+    #define DEV_HISTORY_LEN 3
+    float       history[DEV_HISTORY_LEN];
+    uint8_t     history_idx;
+    bool        history_full;
 };
 
 /* Initialize device registry - loads from /devices.json, auto-registers chip_temp */
@@ -71,7 +79,7 @@ bool deviceRemove(const char *name);
 Device *deviceFind(const char *name);
 
 /* Read a sensor device. Returns the reading as a float. */
-float deviceReadSensor(const Device *dev);
+float deviceReadSensor(Device *dev);
 
 /* Set an actuator device. value: 0/1 for digital/relay, 0-255 for PWM. Returns true on success. */
 bool deviceSetActuator(Device *dev, int value);
@@ -83,7 +91,7 @@ bool deviceIsSensor(DeviceKind kind);
 bool deviceIsActuator(DeviceKind kind);
 
 /* Get the device array (for listing) */
-const Device *deviceGetAll();
+Device *deviceGetAll();
 
 /* Get the kind name as a string */
 const char *deviceKindName(DeviceKind kind);
