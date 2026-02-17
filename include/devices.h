@@ -54,7 +54,7 @@ struct Device {
     float       ema;
     bool        ema_init;
     /* Recent readings for sparkline (runtime only, not persisted) */
-    #define DEV_HISTORY_LEN 3
+    #define DEV_HISTORY_LEN 6
     float       history[DEV_HISTORY_LEN];
     uint8_t     history_idx;
     bool        history_full;
