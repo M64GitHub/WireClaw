@@ -4,6 +4,7 @@
  */
 
 #include "devices.h"
+#include "nats_hal.h"
 #include "llm_client.h"
 #include <LittleFS.h>
 #if !defined(CONFIG_IDF_TARGET_ESP32)
@@ -86,6 +87,9 @@ Device *deviceFind(const char *name) {
 bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
                     const char *unit, bool inverted,
                     const char *nats_subject, uint32_t baud) {
+    /* Reject HAL reserved names */
+    if (halIsReservedName(name)) return false;
+
     /* Check for duplicate */
     if (deviceFind(name)) return false;
 

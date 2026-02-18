@@ -6,6 +6,7 @@
 #include "tools.h"
 #include "llm_client.h"
 #include "devices.h"
+#include "nats_hal.h"
 #include "rules.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -331,6 +332,11 @@ static void tool_device_register(const char *args, char *result, int result_len)
     }
 
     int baud_rate = jsonArgInt(args, "baud", 9600);
+
+    if (halIsReservedName(name)) {
+        snprintf(result, result_len, "Error: '%s' is a reserved HAL keyword", name);
+        return;
+    }
 
     if (!deviceRegister(name, kind, (uint8_t)pin, unit, inverted,
                         subject[0] ? subject : nullptr,
