@@ -23,6 +23,9 @@ extern bool g_debug;
 /* Shared reply buffer for all handlers */
 static char g_hal_reply[512];
 
+/* PWM value cache — so .get can return what was last set */
+static uint8_t s_pwm_state[SOC_GPIO_PIN_COUNT] = {0};
+
 /* Reserved HAL keywords — cannot be used as device names */
 static const char *HAL_RESERVED[] = {
     "gpio", "adc", "pwm", "dac", "uart", "system", "device", "config"
@@ -102,7 +105,6 @@ static void halGpio(nats_client_t *client, const nats_msg_t *msg,
     const char *action = dot + 1;
 
     if (strcmp(action, "get") == 0) {
-        pinMode(pin, INPUT);
         int val = digitalRead(pin);
         snprintf(g_hal_reply, sizeof(g_hal_reply), "%d", val);
         if (msg->reply_len > 0)
@@ -155,20 +157,20 @@ static void halAdc(nats_client_t *client, const nats_msg_t *msg,
 }
 
 /*============================================================================
- * Handler: pwm.{pin}.set
+ * Handler: pwm.{pin}.set / pwm.{pin}.get
  *============================================================================*/
 
 static void halPwm(nats_client_t *client, const nats_msg_t *msg,
                    const char *rest, const char *payload) {
     if (!rest || !*rest) {
-        halError(client, msg, "bad_request", "pwm.{pin}.set");
+        halError(client, msg, "bad_request", "pwm.{pin}.set or pwm.{pin}.get");
         return;
     }
 
     char pinStr[8];
     const char *dot = strchr(rest, '.');
     if (!dot) {
-        halError(client, msg, "bad_request", "missing .set suffix");
+        halError(client, msg, "bad_request", "missing .set or .get suffix");
         return;
     }
     size_t plen = dot - rest;
@@ -186,10 +188,22 @@ static void halPwm(nats_client_t *client, const nats_msg_t *msg,
         return;
     }
 
-    int val = payload[0] ? atoi(payload) : 0;
-    analogWrite(pin, constrain(val, 0, 255));
-    if (msg->reply_len > 0)
-        nats_msg_respond_str(client, msg, "ok");
+    const char *action = dot + 1;
+
+    if (strcmp(action, "set") == 0) {
+        int val = payload[0] ? atoi(payload) : 0;
+        val = constrain(val, 0, 255);
+        analogWrite(pin, val);
+        s_pwm_state[pin] = (uint8_t)val;
+        if (msg->reply_len > 0)
+            nats_msg_respond_str(client, msg, "ok");
+    } else if (strcmp(action, "get") == 0) {
+        snprintf(g_hal_reply, sizeof(g_hal_reply), "%d", s_pwm_state[pin]);
+        if (msg->reply_len > 0)
+            nats_msg_respond_str(client, msg, g_hal_reply);
+    } else {
+        halError(client, msg, "bad_action", "use .set or .get");
+    }
 }
 
 /*============================================================================
@@ -408,6 +422,17 @@ bool halIsReservedName(const char *name) {
         if (strcmp(name, HAL_RESERVED[i]) == 0) return true;
     }
     return false;
+}
+
+uint8_t halPwmGet(uint8_t pin) {
+    if (pin >= SOC_GPIO_PIN_COUNT) return 0;
+    return s_pwm_state[pin];
+}
+
+void halPwmSet(uint8_t pin, uint8_t value) {
+    if (pin >= SOC_GPIO_PIN_COUNT) return;
+    analogWrite(pin, value);
+    s_pwm_state[pin] = value;
 }
 
 void onNatsHal(nats_client_t *client, const nats_msg_t *msg, void *userdata) {

@@ -152,7 +152,6 @@ static void tool_gpio_read(const char *args, char *result, int result_len) {
         return;
     }
 
-    pinMode(pin, INPUT);
     int value = digitalRead(pin);
     snprintf(result, result_len, "GPIO %d = %d (%s)", pin, value,
              value ? "HIGH" : "LOW");
@@ -356,7 +355,7 @@ static void tool_device_register(const char *args, char *result, int result_len)
                  name, baud_rate, SERIAL_TEXT_RX, SERIAL_TEXT_TX);
     } else {
         snprintf(result, result_len, "Registered %s '%s' on pin %d",
-                 deviceIsSensor(kind) ? "sensor" : "actuator", name, pin);
+                 deviceIsSensor(kind) ? "sensor" : "output", name, pin);
     }
 }
 

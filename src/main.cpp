@@ -221,7 +221,7 @@ char natsSubjectEvents[64];
 static char natsSubjectToolExec[64];
 static char natsSubjectCapabilities[64];
 static char natsSubjectHal[64];
-static const char natsSubjectDiscover[] = "_wc.discover";
+static const char natsSubjectDiscover[] = "_ion.discover";
 
 /* Conversation history */
 struct Turn {
@@ -1751,6 +1751,9 @@ void loop() {
     if (g_telegram_enabled) {
         telegramTick();
     }
+
+    /* Keep sensor EMA values warm (every 10s) */
+    sensorsPoll();
 
     /* Evaluate automation rules */
     rulesEvaluate();

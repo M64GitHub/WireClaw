@@ -63,8 +63,17 @@ struct Device {
 /* Initialize device registry - loads from /devices.json, auto-registers chip_temp */
 void devicesInit();
 
+/* Background sensor poll - call from main loop to keep EMA warm */
+void sensorsPoll();
+
 /* Persist device registry to /devices.json */
 void devicesSave();
+
+/* Clear all devices (deinits serial_text if active, zeroes array) */
+void devicesClear();
+
+/* Reload devices from /devices.json, re-register builtins */
+void devicesReload();
 
 /* Register a new device. Returns true on success. */
 bool deviceRegister(const char *name, DeviceKind kind, uint8_t pin,
@@ -79,7 +88,7 @@ bool deviceRemove(const char *name);
 Device *deviceFind(const char *name);
 
 /* Read a sensor device. Returns the reading as a float. */
-float deviceReadSensor(Device *dev);
+float deviceReadSensor(Device *dev, bool record_hist = false);
 
 /* Set an actuator device. value: 0/1 for digital/relay, 0-255 for PWM. Returns true on success. */
 bool deviceSetActuator(Device *dev, int value);

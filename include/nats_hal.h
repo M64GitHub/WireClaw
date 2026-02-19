@@ -24,4 +24,14 @@ void onNatsHal(nats_client_t *client, const nats_msg_t *msg, void *userdata);
  */
 bool halIsReservedName(const char *name);
 
+/**
+ * Get cached PWM value for a pin (last value written via halPwmSet or NATS).
+ */
+uint8_t halPwmGet(uint8_t pin);
+
+/**
+ * Set PWM value on a pin (analogWrite + cache update).
+ */
+void halPwmSet(uint8_t pin, uint8_t value);
+
 #endif /* NATS_HAL_H */

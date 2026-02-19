@@ -721,8 +721,8 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 |------|------|-------------|
 | `digital_in` | Sensor | `digitalRead()` - 0 or 1 |
 | `analog_in` | Sensor | `analogRead()` - raw ADC value 0-4095 |
-| `ntc_10k` | Sensor | NTC 10K thermistor (B=3950, 16-sample averaged + EMA α=0.3). Default: NTC between ADC and GND. Set `inverted=true` if NTC is on the 3.3V side |
-| `ldr` | Sensor | Light-dependent resistor - rough lux estimate (16-sample averaged, no EMA — instant response) |
+| `ntc_10k` | Sensor | NTC 10K thermistor (B=3950, calibrated millivolt reads, 16-sample averaged). Background-polled every 5s with ADC warmup - rules and web UI read the cached value. Default: NTC between ADC and GND. Set `inverted=true` if NTC is on the 3.3V side |
+| `ldr` | Sensor | Light-dependent resistor - rough lux estimate (16-sample averaged, no EMA - instant response) |
 | `internal_temp` | Sensor | ESP32 chip temperature (no pin, virtual) |
 | `clock_hour` | Sensor | Current hour 0-23 via NTP (no pin, virtual) |
 | `clock_minute` | Sensor | Current minute 0-59 via NTP (no pin, virtual) |
@@ -832,6 +832,7 @@ You just describe what you want in natural language. The AI picks the right para
 - **Interval** - configurable per rule (default 5 seconds)
 - **Telegram cooldown** - per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
 - **Message interpolation** - `{value}` in telegram/NATS/serial messages is replaced with the triggering sensor's reading; `{device_name}` (e.g. `{chip_temp}`) reads any named sensor live at fire time; `{name:msg}` inserts the message string from a NATS virtual sensor or serial_text device
+- **Background sensor polling** - NTC sensors are read every 5s via `ntcReadWithWarmup()` (16-sample warmup burst + 300ms settle delay + 16-sample real read, using calibrated `analogReadMilliVolts()`). The ESP32 SAR ADC reads ~60mV high after >1s idle; the 300ms delay lets it settle. Rules, web UI, and LLM tools read the cached value - no direct ADC access. All sensors get sparkline history every 5 minutes (6 slots = last 30 minutes). History is recorded exclusively by the background poll
 - **Sensor caching** - all rules monitoring the same sensor see the same value per evaluation cycle
 - **NATS events** - every rule trigger publishes to `{device_name}.events`
 - **Persistence** - rules survive reboots (`/rules.json`)
@@ -933,7 +934,7 @@ When `nats_host` is configured, the device subscribes to:
 | `{device_name}.tool_exec` | Request/reply - execute a tool directly (no LLM), returns JSON result |
 | `{device_name}.capabilities` | Request/reply - query devices, rules, tools, version |
 | `{device_name}.hal.>` | Request/reply - direct hardware access (GPIO, ADC, PWM, UART, system, devices) |
-| `_wc.discover` | Request/reply - discover all WireClaw devices on the network |
+| `_ion.discover` | Request/reply - discover all WireClaw devices on the network |
 
 Rule triggers automatically publish events:
 
@@ -1234,7 +1235,7 @@ The key is `"tool"` (not `"name"`) to avoid collision with tools that have a `"n
 Find all WireClaw devices on the network:
 
 ```bash
-$ nats req _wc.discover "" --replies=0 --timeout=3s
+$ nats req _ion.discover "" --replies=0 --timeout=3s
 {"device":"wireclaw-01","version":"0.4.0","free_heap":81664,
  "tools":["led_set","gpio_write",...],
  "devices":[{"name":"chip_temp","kind":"internal_temp","value":33.2,"unit":"C"},
@@ -1335,7 +1336,7 @@ After setup, run the discover command from the OpenClaw host:
 
 ```
 $ ./wc.sh discover
-13:40:47 Sending request on "_wc.discover"
+13:40:47 Sending request on "_ion.discover"
 13:40:47 Received with rtt 47.973015ms
 {"device":"wireclaw-01","version":"0.4.0","free_heap":81664,"tools":["led_set","gpio_write",
 "gpio_read","device_info","file_read","file_write","nats_publish","temperature_read",
@@ -1378,7 +1379,7 @@ No authentication in v1 - same as the existing NATS chat and cmd subjects. Anyon
 
 ## NATS HAL (Hardware Abstraction Layer)
 
-Direct hardware access over NATS — no LLM, no JSON wrappers, just simple request/reply. Any system on the network can read GPIO pins, control PWM, query sensors, and set actuators with plain NATS messages.
+Direct hardware access over NATS - no LLM, no JSON wrappers, just simple request/reply. Any system on the network can read GPIO pins, control PWM, query sensors, and set actuators with plain NATS messages.
 
 The HAL subscribes to `{device_name}.hal.>` as a wildcard. The subject suffix determines the operation, the payload (if any) is the value to set, and the reply is a plain value or `ok`.
 
@@ -1500,7 +1501,7 @@ Both provide LLM-free access over NATS, but serve different use cases:
 | **Use case** | Scripts, WireMaster nodes, tight loops | OpenClaw, complex tool calls, rule creation |
 | **Overhead** | Minimal | JSON parse + tool dispatch |
 
-The HAL is designed for high-frequency, low-overhead access — ideal for scripts, monitoring dashboards, and other microcontrollers on the network that need to query or control hardware directly. Set actions (GPIO, PWM, UART write, actuator) execute even without a reply subject (fire-and-forget via `nats pub`).
+The HAL is designed for high-frequency, low-overhead access - ideal for scripts, monitoring dashboards, and other microcontrollers on the network that need to query or control hardware directly. Set actions (GPIO, PWM, UART write, actuator) execute even without a reply subject (fire-and-forget via `nats pub`).
 
 ### Reserved Names
 
