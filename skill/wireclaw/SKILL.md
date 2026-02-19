@@ -70,7 +70,7 @@ You can use either the wrapper or raw `nats req` commands - both work identicall
 ```bash
 # Find all WireClaws on the network
 scripts/wc.sh discover
-# or: nats req "_wc.discover" "" --replies=0 --timeout=3s
+# or: nats req "_ion.discover" "" --replies=0 --timeout=3s
 
 # Query a specific device
 scripts/wc.sh caps wireclaw-01

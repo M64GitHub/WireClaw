@@ -6,6 +6,7 @@
 #include "tools.h"
 #include "llm_client.h"
 #include "devices.h"
+#include "nats_hal.h"
 #include "rules.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -151,7 +152,6 @@ static void tool_gpio_read(const char *args, char *result, int result_len) {
         return;
     }
 
-    pinMode(pin, INPUT);
     int value = digitalRead(pin);
     snprintf(result, result_len, "GPIO %d = %d (%s)", pin, value,
              value ? "HIGH" : "LOW");
@@ -332,6 +332,11 @@ static void tool_device_register(const char *args, char *result, int result_len)
 
     int baud_rate = jsonArgInt(args, "baud", 9600);
 
+    if (halIsReservedName(name)) {
+        snprintf(result, result_len, "Error: '%s' is a reserved HAL keyword", name);
+        return;
+    }
+
     if (!deviceRegister(name, kind, (uint8_t)pin, unit, inverted,
                         subject[0] ? subject : nullptr,
                         kind == DEV_SENSOR_SERIAL_TEXT ? (uint32_t)baud_rate : 0)) {
@@ -350,7 +355,7 @@ static void tool_device_register(const char *args, char *result, int result_len)
                  name, baud_rate, SERIAL_TEXT_RX, SERIAL_TEXT_TX);
     } else {
         snprintf(result, result_len, "Registered %s '%s' on pin %d",
-                 deviceIsSensor(kind) ? "sensor" : "actuator", name, pin);
+                 deviceIsSensor(kind) ? "sensor" : "output", name, pin);
     }
 }
 

@@ -513,6 +513,7 @@ Everything is restored. The fan rule is watching the temperature and will fire w
 - **Multi-Device Mesh** - devices talk to each other over NATS via `remote_chat`
 - **Telegram Bot** - chat with your ESP32 from your phone
 - **NATS Virtual Sensors** - subscribe to any NATS subject as a sensor, trigger rules from external systems (Python, Home Assistant, PLCs, other WireClaws)
+- **NATS HAL** - direct hardware access over NATS (`{device}.hal.gpio.5.set "1"` → `ok`) - no LLM, no JSON, just raw request/reply for GPIO, ADC, PWM, UART, system info, and registered devices
 - **NATS Integration** - device-to-device messaging, commands, and rule-triggered events
 - **Web Config Portal** - browser-based UI at `http://<device-ip>/` for editing config, system prompt, memory, and viewing device status. mDNS: `http://<device-name>.local/`
 - **Serial Interface** - local chat and commands over USB (115200 baud)
@@ -720,8 +721,8 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 |------|------|-------------|
 | `digital_in` | Sensor | `digitalRead()` - 0 or 1 |
 | `analog_in` | Sensor | `analogRead()` - raw ADC value 0-4095 |
-| `ntc_10k` | Sensor | NTC 10K thermistor (B=3950, 16-sample averaged + EMA α=0.3). Default: NTC between ADC and GND. Set `inverted=true` if NTC is on the 3.3V side |
-| `ldr` | Sensor | Light-dependent resistor - rough lux estimate (16-sample averaged, no EMA — instant response) |
+| `ntc_10k` | Sensor | NTC 10K thermistor (B=3950, calibrated millivolt reads, 16-sample averaged). Background-polled every 5s with ADC warmup - rules and web UI read the cached value. Default: NTC between ADC and GND. Set `inverted=true` if NTC is on the 3.3V side |
+| `ldr` | Sensor | Light-dependent resistor - rough lux estimate (16-sample averaged, no EMA - instant response) |
 | `internal_temp` | Sensor | ESP32 chip temperature (no pin, virtual) |
 | `clock_hour` | Sensor | Current hour 0-23 via NTP (no pin, virtual) |
 | `clock_minute` | Sensor | Current minute 0-59 via NTP (no pin, virtual) |
@@ -831,6 +832,7 @@ You just describe what you want in natural language. The AI picks the right para
 - **Interval** - configurable per rule (default 5 seconds)
 - **Telegram cooldown** - per-rule cooldown prevents message spam when sensor oscillates around threshold (configurable via `telegram_cooldown` in config.json, default 60s, 0 = disabled)
 - **Message interpolation** - `{value}` in telegram/NATS/serial messages is replaced with the triggering sensor's reading; `{device_name}` (e.g. `{chip_temp}`) reads any named sensor live at fire time; `{name:msg}` inserts the message string from a NATS virtual sensor or serial_text device
+- **Background sensor polling** - NTC sensors are read every 5s via `ntcReadWithWarmup()` (16-sample warmup burst + 300ms settle delay + 16-sample real read, using calibrated `analogReadMilliVolts()`). The ESP32 SAR ADC reads ~60mV high after >1s idle; the 300ms delay lets it settle. Rules, web UI, and LLM tools read the cached value - no direct ADC access. All sensors get sparkline history every 5 minutes (6 slots = last 30 minutes). History is recorded exclusively by the background poll
 - **Sensor caching** - all rules monitoring the same sensor see the same value per evaluation cycle
 - **NATS events** - every rule trigger publishes to `{device_name}.events`
 - **Persistence** - rules survive reboots (`/rules.json`)
@@ -931,7 +933,8 @@ When `nats_host` is configured, the device subscribes to:
 | `{device_name}.events` | Published events: online, rule triggers, tool_exec results |
 | `{device_name}.tool_exec` | Request/reply - execute a tool directly (no LLM), returns JSON result |
 | `{device_name}.capabilities` | Request/reply - query devices, rules, tools, version |
-| `_wc.discover` | Request/reply - discover all WireClaw devices on the network |
+| `{device_name}.hal.>` | Request/reply - direct hardware access (GPIO, ADC, PWM, UART, system, devices) |
+| `_ion.discover` | Request/reply - discover all WireClaw devices on the network |
 
 Rule triggers automatically publish events:
 
@@ -1044,7 +1047,7 @@ Unsubscribes from the NATS subject and removes the device. Rules referencing it 
 - Last received value resets to 0 on boot until a new message arrives
 - Up to 16 devices total (shared with physical sensors/actuators and built-in virtual sensors)
 - NATS subject max length: 31 characters, message field max length: 63 characters
-- 11 NATS subscription slots available (16 max minus 5 for chat, cmd, tool_exec, capabilities, discover)
+- 10 NATS subscription slots available (16 max minus 6 for chat, cmd, tool_exec, capabilities, discover, hal)
 
 ### Serial Text UART
 
@@ -1232,7 +1235,7 @@ The key is `"tool"` (not `"name"`) to avoid collision with tools that have a `"n
 Find all WireClaw devices on the network:
 
 ```bash
-$ nats req _wc.discover "" --replies=0 --timeout=3s
+$ nats req _ion.discover "" --replies=0 --timeout=3s
 {"device":"wireclaw-01","version":"0.4.0","free_heap":81664,
  "tools":["led_set","gpio_write",...],
  "devices":[{"name":"chip_temp","kind":"internal_temp","value":33.2,"unit":"C"},
@@ -1333,7 +1336,7 @@ After setup, run the discover command from the OpenClaw host:
 
 ```
 $ ./wc.sh discover
-13:40:47 Sending request on "_wc.discover"
+13:40:47 Sending request on "_ion.discover"
 13:40:47 Received with rtt 47.973015ms
 {"device":"wireclaw-01","version":"0.4.0","free_heap":81664,"tools":["led_set","gpio_write",
 "gpio_read","device_info","file_read","file_write","nats_publish","temperature_read",
@@ -1373,6 +1376,155 @@ Two tools are blocked via `tool_exec`:
 | `file_write` to `/memory.txt` | Internal AI memory, auto-injected into every conversation. External writes would corrupt the device's learned context. |
 
 No authentication in v1 - same as the existing NATS chat and cmd subjects. Anyone on the NATS network can call tools. If your network is untrusted, restrict access at the NATS server level (credentials, subject permissions).
+
+## NATS HAL (Hardware Abstraction Layer)
+
+Direct hardware access over NATS - no LLM, no JSON wrappers, just simple request/reply. Any system on the network can read GPIO pins, control PWM, query sensors, and set actuators with plain NATS messages.
+
+The HAL subscribes to `{device_name}.hal.>` as a wildcard. The subject suffix determines the operation, the payload (if any) is the value to set, and the reply is a plain value or `ok`.
+
+### Endpoints
+
+| Subject | Payload | Reply | Description |
+|---------|---------|-------|-------------|
+| `hal.gpio.{pin}.get` | *(empty)* | `0` or `1` | Read GPIO pin (sets INPUT mode) |
+| `hal.gpio.{pin}.set` | `0` or `1` | `ok` | Write GPIO pin (sets OUTPUT mode) |
+| `hal.adc.{pin}.read` | *(empty)* | `0`-`4095` | Read ADC value (raw 12-bit) |
+| `hal.pwm.{pin}.set` | `0`-`255` | `ok` | Set PWM output |
+| `hal.uart.read` | *(empty)* | last UART line | Read last serial_text line |
+| `hal.uart.write` | text | `ok` | Send text over serial_text UART |
+| `hal.system.temperature` | *(empty)* | `32.2` | Chip temperature in Celsius |
+| `hal.system.heap` | *(empty)* | `81664` | Free heap in bytes |
+| `hal.system.uptime` | *(empty)* | `3672` | Uptime in seconds |
+| `hal.device.list` | *(empty)* | JSON array | All registered devices with values |
+| `hal.{sensor}` | *(empty)* | `24.5` | Read a registered sensor by name |
+| `hal.{sensor}.info` | *(empty)* | JSON object | Device details (name, kind, unit, value, pin) |
+| `hal.{actuator}.set` | value | `ok` | Set a registered actuator |
+| `hal.{actuator}.get` | *(empty)* | `0` | Read last actuator value |
+
+Errors return JSON: `{"error":"bad_pin","detail":"pin out of range"}`
+
+### Examples
+
+Read chip temperature:
+
+```
+$ nats req wireclaw-01.hal.system.temperature "" --server nats://192.168.178.39:4222
+10:17:16 Sending request on "wireclaw-01.hal.system.temperature"
+10:17:16 Received with rtt 64.233439ms
+32.2
+```
+
+Read a GPIO pin:
+
+```
+$ nats req wireclaw-01.hal.gpio.5.get "" --server nats://192.168.178.39:4222
+10:17:55 Sending request on "wireclaw-01.hal.gpio.5.get"
+10:17:55 Received with rtt 58.240902ms
+0
+```
+
+Set a GPIO pin HIGH:
+
+```
+$ nats req wireclaw-01.hal.gpio.5.set "1" --server nats://192.168.178.39:4222
+10:19:31 Sending request on "wireclaw-01.hal.gpio.5.set"
+10:19:31 Received with rtt 44.655273ms
+ok
+```
+
+Verify it changed:
+
+```
+$ nats req wireclaw-01.hal.gpio.5.get "" --server nats://192.168.178.39:4222
+10:19:33 Sending request on "wireclaw-01.hal.gpio.5.get"
+10:19:33 Received with rtt 63.62419ms
+1
+```
+
+Query system status:
+
+```bash
+$ nats req wireclaw-01.hal.system.heap ""
+81664
+
+$ nats req wireclaw-01.hal.system.uptime ""
+3672
+```
+
+Read a registered sensor by name:
+
+```bash
+$ nats req wireclaw-01.hal.chip_temp ""
+32.2
+
+$ nats req wireclaw-01.hal.chip_temp.info ""
+{"name":"chip_temp","kind":"internal_temp","unit":"C","value":32.2,"pin":255}
+```
+
+List all registered devices:
+
+```bash
+$ nats req wireclaw-01.hal.device.list ""
+[{"name":"chip_temp","kind":"internal_temp","value":32.2,"unit":"C"},...]
+```
+
+Set a registered actuator:
+
+```bash
+$ nats req wireclaw-01.hal.fan.set "1"
+ok
+
+$ nats req wireclaw-01.hal.fan.get ""
+1
+```
+
+Read ADC and set PWM:
+
+```bash
+$ nats req wireclaw-01.hal.adc.4.read ""
+2048
+
+$ nats req wireclaw-01.hal.pwm.5.set "128"
+ok
+```
+
+### HAL vs OpenClaw tool_exec
+
+Both provide LLM-free access over NATS, but serve different use cases:
+
+| | HAL | tool_exec |
+|---|---|---|
+| **Subject** | `{device}.hal.gpio.5.set` | `{device}.tool_exec` |
+| **Payload** | `"1"` | `{"tool":"gpio_write","pin":5,"value":1}` |
+| **Reply** | `ok` | `{"ok":true,"result":"GPIO 5 set to HIGH"}` |
+| **Use case** | Scripts, WireMaster nodes, tight loops | OpenClaw, complex tool calls, rule creation |
+| **Overhead** | Minimal | JSON parse + tool dispatch |
+
+The HAL is designed for high-frequency, low-overhead access - ideal for scripts, monitoring dashboards, and other microcontrollers on the network that need to query or control hardware directly. Set actions (GPIO, PWM, UART write, actuator) execute even without a reply subject (fire-and-forget via `nats pub`).
+
+### Reserved Names
+
+The HAL reserves 8 keywords as subject segments: `gpio`, `adc`, `pwm`, `dac`, `uart`, `system`, `device`, `config`. These cannot be used as device names in the device registry. Attempting to register a device with a reserved name returns an error.
+
+### Capabilities
+
+The `{device_name}.capabilities` response includes a `hal` field showing available HAL features:
+
+```json
+{
+  "hal": {
+    "gpio": true,
+    "adc": true,
+    "pwm": true,
+    "dac": false,
+    "uart": true,
+    "system_temp": true
+  }
+}
+```
+
+`dac` is `false` because ESP32-C6, S3, and C3 have no DAC peripheral. Requesting `hal.dac.*` returns an error.
 
 ## Configuration
 
@@ -1417,8 +1569,8 @@ Created automatically on flash, persisted across reboots:
 ## Resource Usage
 
 ```
-RAM:   59.8% (196KB of 320KB)
-Flash: 50.8% (1.3MB of 2.5MB)
+RAM:   59.7% (196KB of 320KB)
+Flash: 51.4% (1.3MB of 2.5MB)
 ```
 
 Static allocations: device registry (768B), rule engine (6.2KB), LLM request buffer (20KB), conversation history, persistent memory (512B), TLS stack, WebServer + mDNS (~4.5KB RAM). Setup portal and web config HTML are stored in flash (PROGMEM), not RAM.

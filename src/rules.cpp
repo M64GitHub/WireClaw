@@ -178,7 +178,7 @@ const char *ruleCreate(const char *name, const char *sensor_name, uint8_t sensor
     r->chain_off_delay_ms = chain_off_delay_ms;
 
     r->fired = false;
-    r->last_eval = 0;
+    r->last_eval = millis();
     r->last_triggered = 0;
     r->last_reading = 0.0f;
     r->enabled = true;
@@ -749,7 +749,7 @@ static void rulesLoad() {
         r->enabled = ruleJsonGetBool(objBuf, "en", true);
         r->last_triggered = (uint32_t)ruleJsonGetInt(objBuf, "lt", 0);
         r->fired = false;
-        r->last_eval = 0;
+        r->last_eval = millis();
         r->last_reading = 0.0f;
         r->used = true;
 

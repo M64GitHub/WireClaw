@@ -23,6 +23,7 @@
 #include "setup_portal.h"
 #include "version.h"
 #include "web_config.h"
+#include "nats_hal.h"
 #include <nats_atoms.h>
 
 /*============================================================================
@@ -219,7 +220,8 @@ static char natsSubjectCmd[64];
 char natsSubjectEvents[64];
 static char natsSubjectToolExec[64];
 static char natsSubjectCapabilities[64];
-static const char natsSubjectDiscover[] = "_wc.discover";
+static char natsSubjectHal[64];
+static const char natsSubjectDiscover[] = "_ion.discover";
 
 /* Conversation history */
 struct Turn {
@@ -388,7 +390,7 @@ bool connectWiFi() {
 
 /* Static storage for tool call results (persists across loop iterations) */
 static char toolResultBufs[LLM_MAX_TOOL_CALLS][TOOL_RESULT_MAX_LEN];
-static char toolCallJsonBuf[4096]; /* copy of tool_calls_json for message building */
+char toolCallJsonBuf[4096]; /* copy of tool_calls_json for message building */
 static char memoryBuf[512]; /* persistent AI memory from /memory.txt */
 
 /**
@@ -1022,7 +1024,9 @@ static void onNatsCapabilities(nats_client_t *client, const nats_msg_t *msg,
             r->sensor_name,
             r->fired ? "true" : "false");
     }
-    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w, "]}");
+    w += snprintf(toolCallJsonBuf + w, sizeof(toolCallJsonBuf) - w,
+        "],\"hal\":{\"gpio\":true,\"adc\":true,\"pwm\":true,"
+        "\"dac\":false,\"uart\":true,\"system_temp\":true}}");
 
     Serial.printf("[NATS] capabilities: %d bytes\n> ", w);
 
@@ -1098,6 +1102,8 @@ static void buildNatsSubjects() {
              "%s.tool_exec", cfg_device_name);
     snprintf(natsSubjectCapabilities, sizeof(natsSubjectCapabilities),
              "%s.capabilities", cfg_device_name);
+    snprintf(natsSubjectHal, sizeof(natsSubjectHal),
+             "%s.hal.>", cfg_device_name);
 }
 
 /**
@@ -1145,19 +1151,28 @@ static bool connectNats() {
                       natsSubjectDiscover, nats_err_str(err));
     }
 
+    err = natsClient.subscribe(natsSubjectHal, onNatsHal, nullptr);
+    if (err != NATS_OK) {
+        Serial.printf("NATS: subscribe %s failed: %s\n",
+                      natsSubjectHal, nats_err_str(err));
+    }
+
     /* Publish online event */
     static char onlineMsg[256];
     snprintf(onlineMsg, sizeof(onlineMsg),
              "{\"event\":\"online\",\"device\":\"%s\",\"version\":\"%s\","
-             "\"ip\":\"%s\",\"tool_exec\":\"%s\",\"capabilities\":\"%s\"}",
+             "\"ip\":\"%s\",\"tool_exec\":\"%s\",\"capabilities\":\"%s\","
+             "\"hal\":\"%s\"}",
              cfg_device_name, WIRECLAW_VERSION,
              WiFi.localIP().toString().c_str(),
-             natsSubjectToolExec, natsSubjectCapabilities);
+             natsSubjectToolExec, natsSubjectCapabilities,
+             natsSubjectHal);
     natsClient.publish(natsSubjectEvents, onlineMsg);
 
-    Serial.printf("NATS: subscribed to %s, %s, %s, %s\n",
+    Serial.printf("NATS: subscribed to %s, %s, %s, %s, %s\n",
                   natsSubjectChat, natsSubjectCmd,
-                  natsSubjectToolExec, natsSubjectCapabilities);
+                  natsSubjectToolExec, natsSubjectCapabilities,
+                  natsSubjectHal);
 
     /* Subscribe NATS virtual sensors */
     natsSubscribeDeviceSensors();
@@ -1736,6 +1751,9 @@ void loop() {
     if (g_telegram_enabled) {
         telegramTick();
     }
+
+    /* Keep sensor EMA values warm (every 10s) */
+    sensorsPoll();
 
     /* Evaluate automation rules */
     rulesEvaluate();

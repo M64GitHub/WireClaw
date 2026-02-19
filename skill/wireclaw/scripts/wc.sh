@@ -59,7 +59,7 @@ cmd_caps() {
 }
 
 cmd_discover() {
-    exec nats req "_wc.discover" "" \
+    exec nats req "_ion.discover" "" \
         --server="${NATS_URL}" \
         --replies=0 \
         --timeout=3s
