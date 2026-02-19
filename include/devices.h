@@ -32,6 +32,7 @@ enum DeviceKind {
     DEV_ACTUATOR_DIGITAL,       /* digitalWrite */
     DEV_ACTUATOR_RELAY,         /* digitalWrite (inverted flag) */
     DEV_ACTUATOR_PWM,           /* analogWrite 0-255 */
+    DEV_ACTUATOR_RGB_LED,       /* rgbLedWrite packed 0xRRGGBB */
 };
 
 struct Device {
@@ -142,5 +143,8 @@ bool serialTextSend(const char *text);
 const char *serialTextGetMsg();
 float serialTextGetValue();
 bool serialTextActive();
+
+/* Returns true if the rgb_led device is set to a non-zero color (suppresses heartbeat) */
+bool rgbLedOverride();
 
 #endif /* DEVICES_H */

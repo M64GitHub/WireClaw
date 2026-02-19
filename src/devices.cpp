@@ -13,6 +13,8 @@ extern temperature_sensor_handle_t g_temp_sensor;
 #endif
 #include <math.h>
 extern bool g_debug;
+extern void led(uint8_t r, uint8_t g, uint8_t b);
+extern bool g_led_user;
 
 static Device g_devices[MAX_DEVICES];
 
@@ -43,6 +45,7 @@ const char *deviceKindName(DeviceKind kind) {
         case DEV_ACTUATOR_DIGITAL:     return "digital_out";
         case DEV_ACTUATOR_RELAY:       return "relay";
         case DEV_ACTUATOR_PWM:         return "pwm";
+        case DEV_ACTUATOR_RGB_LED:     return "rgb_led";
         default:                       return "unknown";
     }
 }
@@ -61,6 +64,7 @@ static DeviceKind kindFromString(const char *s) {
     if (strcmp(s, "digital_out") == 0)   return DEV_ACTUATOR_DIGITAL;
     if (strcmp(s, "relay") == 0)         return DEV_ACTUATOR_RELAY;
     if (strcmp(s, "pwm") == 0)           return DEV_ACTUATOR_PWM;
+    if (strcmp(s, "rgb_led") == 0)      return DEV_ACTUATOR_RGB_LED;
     return DEV_SENSOR_DIGITAL;
 }
 
@@ -284,6 +288,13 @@ bool deviceSetActuator(Device *dev, int value) {
         case DEV_ACTUATOR_PWM:
             pinMode(dev->pin, OUTPUT);
             analogWrite(dev->pin, constrain(value, 0, 255));
+            return true;
+
+        case DEV_ACTUATOR_RGB_LED:
+            led((uint8_t)((value >> 16) & 0xFF),
+                (uint8_t)((value >> 8) & 0xFF),
+                (uint8_t)(value & 0xFF));
+            g_led_user = (value != 0);
             return true;
 
         default:
@@ -551,6 +562,12 @@ void devicesReload() {
         deviceRegister("clock_hhmm", DEV_SENSOR_CLOCK_HHMM, PIN_NONE, "", false);
         changed = true;
     }
+#ifdef RGB_BUILTIN
+    if (!deviceFind("rgb_led")) {
+        deviceRegister("rgb_led", DEV_ACTUATOR_RGB_LED, RGB_BUILTIN, "", false);
+        changed = true;
+    }
+#endif
     if (changed) devicesSave();
 
     int count = 0;
@@ -655,6 +672,11 @@ bool serialTextActive() {
     return g_serial_text_active;
 }
 
+bool rgbLedOverride() {
+    Device *dev = deviceFind("rgb_led");
+    return dev && dev->last_value != 0;
+}
+
 /*============================================================================
  * Background sensor polling - EMA warmup (10s) + history recording (5min)
  *============================================================================*/
@@ -710,6 +732,12 @@ void devicesInit() {
         deviceRegister("clock_hhmm", DEV_SENSOR_CLOCK_HHMM, PIN_NONE, "", false);
         changed = true;
     }
+#ifdef RGB_BUILTIN
+    if (!deviceFind("rgb_led")) {
+        deviceRegister("rgb_led", DEV_ACTUATOR_RGB_LED, RGB_BUILTIN, "", false);
+        changed = true;
+    }
+#endif
     if (changed) devicesSave();
 
     int count = 0;

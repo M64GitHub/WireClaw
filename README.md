@@ -732,8 +732,9 @@ Named sensors and actuators that the AI and rule engine can reference by name.
 | `digital_out` | Actuator | `digitalWrite()` - HIGH or LOW |
 | `relay` | Actuator | `digitalWrite()` with optional inverted logic |
 | `pwm` | Actuator | `analogWrite()` - 0-255 |
+| `rgb_led` | Actuator | Onboard RGB LED - packed 0xRRGGBB value, brightness-scaled (auto-registered on chips with RGB_BUILTIN) |
 
-`chip_temp`, `clock_hour`, `clock_minute`, and `clock_hhmm` are auto-registered on first boot. All other devices are registered through conversation with the AI.
+`chip_temp`, `clock_hour`, `clock_minute`, `clock_hhmm`, and `rgb_led` (on boards with an onboard RGB LED) are auto-registered on first boot. All other devices are registered through conversation with the AI.
 
 Devices persist to `/devices.json` on flash.
 
@@ -1390,7 +1391,8 @@ The HAL subscribes to `{device_name}.hal.>` as a wildcard. The subject suffix de
 | `hal.gpio.{pin}.get` | *(empty)* | `0` or `1` | Read GPIO pin (sets INPUT mode) |
 | `hal.gpio.{pin}.set` | `0` or `1` | `ok` | Write GPIO pin (sets OUTPUT mode) |
 | `hal.adc.{pin}.read` | *(empty)* | `0`-`4095` | Read ADC value (raw 12-bit) |
-| `hal.pwm.{pin}.set` | `0`-`255` | `ok` | Set PWM output |
+| `hal.pwm.{pin}.set` | `0`-`255` | `ok` | Set PWM output (value is cached) |
+| `hal.pwm.{pin}.get` | *(empty)* | `0`-`255` | Read last PWM value set on pin |
 | `hal.uart.read` | *(empty)* | last UART line | Read last serial_text line |
 | `hal.uart.write` | text | `ok` | Send text over serial_text UART |
 | `hal.system.temperature` | *(empty)* | `32.2` | Chip temperature in Celsius |
@@ -1487,6 +1489,9 @@ $ nats req wireclaw-01.hal.adc.4.read ""
 
 $ nats req wireclaw-01.hal.pwm.5.set "128"
 ok
+
+$ nats req wireclaw-01.hal.pwm.5.get ""
+128
 ```
 
 ### HAL vs OpenClaw tool_exec
