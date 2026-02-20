@@ -296,6 +296,8 @@ static void executeAction(Rule *r, bool is_on) {
             uint8_t lb = val & 0xFF;
             led(lr, lg, lb);
             g_led_user = true;
+            { Device *rgb = deviceFind("rgb_led");
+              if (rgb) rgb->last_value = (lr << 16) | (lg << 8) | lb; }
             if (g_debug) Serial.printf("[Rule] %s: LED(%d,%d,%d)\n", r->id, lr, lg, lb);
             break;
         }

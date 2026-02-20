@@ -127,6 +127,8 @@ static void tool_led_set(const char *args, char *result, int result_len) {
 
     led((uint8_t)r, (uint8_t)g, (uint8_t)b);
     g_led_user = true;
+    Device *rgb = deviceFind("rgb_led");
+    if (rgb) rgb->last_value = (r << 16) | (g << 8) | b;
     snprintf(result, result_len, "LED set to RGB(%d, %d, %d)", r, g, b);
 }
 
