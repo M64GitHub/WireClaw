@@ -13,9 +13,8 @@
  * fails
  * - Bounded by design: All operations have explicit size limits
  *
- * @author mario@synadia.com
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @author Mario Schallner
+ * @copyright Copyright (c) 2026 Mario Schallner
  */
 
 #ifndef NATS_PARSE_H

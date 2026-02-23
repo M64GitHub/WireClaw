@@ -2,9 +2,8 @@
  * @file nats_parse.c
  * @brief Safe parsing and string utilities - Implementation
  *
- * @author mario@synadia.com
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @author Mario Schallner
+ * @copyright Copyright (c) 2026 Mario Schallner
  */
 
 #include "nats_parse.h"

@@ -10,7 +10,7 @@
 #ifndef NATS_HAL_H
 #define NATS_HAL_H
 
-#include <nats_atoms.h>
+#include <nats_esp32.h>
 
 /**
  * NATS message callback for hal.> wildcard subscription.

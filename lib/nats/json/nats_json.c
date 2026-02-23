@@ -2,9 +2,8 @@
  * @file nats_json.c
  * @brief Zero-allocation JSON utilities implementation
  *
- * @author mario@synadia.com
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @author Mario Schallner
+ * @copyright Copyright (c) 2026 Mario Schallner
  */
 
 #include "nats_json.h"

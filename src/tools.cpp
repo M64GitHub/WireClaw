@@ -12,7 +12,7 @@
 #include <WiFi.h>
 #include "soc/soc_caps.h"
 #include <LittleFS.h>
-#include <nats_atoms.h>
+#include <nats_esp32.h>
 #include <esp_task_wdt.h>
 #if !defined(CONFIG_IDF_TARGET_ESP32)
 #include "driver/temperature_sensor.h"

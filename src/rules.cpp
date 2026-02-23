@@ -7,7 +7,7 @@
 #include "devices.h"
 #include "llm_client.h"
 #include <LittleFS.h>
-#include <nats_atoms.h>
+#include <nats_esp32.h>
 
 /* Externs from main.cpp */
 extern void led(uint8_t r, uint8_t g, uint8_t b);

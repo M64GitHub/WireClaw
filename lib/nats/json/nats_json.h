@@ -5,9 +5,8 @@
  * Minimal JSON parsing and building for common IoT patterns.
  * No dynamic memory allocation - all buffers provided by caller.
  *
- * @author mario@synadia.com
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @author Mario Schallner
+ * @copyright Copyright (c) 2026 Mario Schallner
  */
 
 #ifndef NATS_JSON_H

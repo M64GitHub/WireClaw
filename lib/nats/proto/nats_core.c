@@ -4,9 +4,8 @@
  *
  * Platform-independent NATS protocol implementation.
  *
- * @author mario@synadia.com
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @author Mario Schallner
+ * @copyright Copyright (c) 2026 Mario Schallner
  */
 
 #include "nats_core.h"

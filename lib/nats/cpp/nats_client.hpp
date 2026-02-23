@@ -1,12 +1,11 @@
 /**
  * @file nats_client.hpp
- * @brief C++ RAII wrapper for nats-atoms
+ * @brief C++ RAII wrapper for nats-esp32
  *
  * Header-only, zero-cost C++ wrapper providing RAII semantics
- * around the nats-atoms C API. All methods inline to C functions.
+ * around the nats-esp32 C API. All methods inline to C functions.
  *
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @copyright Copyright (c) 2026 Mario Schallner
  */
 
 #ifndef NATS_CLIENT_HPP

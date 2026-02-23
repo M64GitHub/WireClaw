@@ -6,9 +6,8 @@
  * This file contains NO platform dependencies - all I/O is done
  * through user-provided function pointers.
  *
- * @author mario@synadia.com
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @author Mario Schallner
+ * @copyright Copyright (c) 2026 Mario Schallner
  *
  * MISRA-C:2012 Compliance Notes:
  * - All functions return explicit error codes (no silent failures)

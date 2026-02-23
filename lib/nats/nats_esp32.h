@@ -1,15 +1,14 @@
 /**
- * @file nats_atoms.h
- * @brief nats-atoms - Native NATS for IoT and Embedded Systems
+ * @file nats_esp32.h
+ * @brief nats-esp32 - Native NATS for IoT and Embedded Systems
  *
  * Single include header for repository development.
  * Packaging scripts transform paths for flat distribution structure.
  *
- * @copyright Copyright (c) 2026 Synadia Communications Inc.
- * @license Apache-2.0
+ * @copyright Copyright (c) 2026 Mario Schallner
  */
-#ifndef NATS_ATOMS_H
-#define NATS_ATOMS_H
+#ifndef NATS_ESP32_H
+#define NATS_ESP32_H
 
 /* Core protocol */
 #include "proto/nats_core.h"
@@ -27,4 +26,4 @@
 #error "POSIX transport not included in this copy"
 #endif
 
-#endif /* NATS_ATOMS_H */
+#endif /* NATS_ESP32_H */

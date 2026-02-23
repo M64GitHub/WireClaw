@@ -24,7 +24,7 @@
 #include "version.h"
 #include "web_config.h"
 #include "nats_hal.h"
-#include <nats_atoms.h>
+#include <nats_esp32.h>
 
 /*============================================================================
  * Configuration
